@@ -59,7 +59,7 @@ const yjs: YjsImpl = <S extends unknown>(
      * Capture the initial state so that we can initialize the Yjs store to the
      * same values as the initial values of the Zustand store.
      */
-    const initialState = config(
+    let initialState = config(
       /*
        * Create a new set function that defers to the original and then passes
        * the new state to patchSharedType.
@@ -71,17 +71,25 @@ const yjs: YjsImpl = <S extends unknown>(
           patchSharedType(map, get()));
       },
       get,
-      {
-        ...api,
-        // Create a new setState function as we did with set.
-        "setState": (partial, replace) =>
-        {
-          api.setState(partial, replace);
-          doc.transact(() =>
-            patchSharedType(map, api.getState()));
-        },
-      }
+      api
     );
+
+    const originalSetState = api.setState;
+    api.setState = (partial, replace) =>
+    {
+      originalSetState(partial, replace);
+      doc.transact(() =>
+        patchSharedType(map, api.getState()));
+    };
+
+    /*
+     * We do not initialize the Yjs map with the initial state here.
+     * Doing so would trigger a transaction that could overwrite remote state
+     * in offline-first scenarios (e.g. "late join"), because the local write
+     * might appear newer than the remote state.
+     *
+     * See "Does not reset state on second join" test in index.spec.ts.
+     */
 
     /*
      * Whenever the Yjs store changes, we perform a set operation on the local

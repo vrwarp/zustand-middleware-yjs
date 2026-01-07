@@ -41,6 +41,37 @@ describe("Yjs middleware", () =>
     expect(getState().count).toBe(1);
   });
 
+  it("Correctly updates Yjs when setState is called", () =>
+  {
+    type Store =
+    {
+      count: number,
+      increment: () => void,
+    };
+
+    const doc = new Y.Doc();
+    const map = doc.getMap("hello");
+
+    const api =
+      createVanilla<Store>(yjs(
+        doc,
+        "hello",
+        (set) =>
+          ({
+            "count": 0,
+            "increment": () =>
+              set((state) =>
+                ({ "count": state.count + 1, })),
+          })
+      ));
+
+    expect(map.get("count")).toBeUndefined();
+
+    api.setState({ "count": 1, });
+
+    expect(map.get("count")).toBe(1);
+  });
+
   it("Receives changes from peers.", () =>
   {
     type Store =
