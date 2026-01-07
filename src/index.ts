@@ -59,7 +59,7 @@ const yjs: YjsImpl = <S extends unknown>(
      * Capture the initial state so that we can initialize the Yjs store to the
      * same values as the initial values of the Zustand store.
      */
-    let initialState = config(
+    const initialState = config(
       /*
        * Create a new set function that defers to the original and then passes
        * the new state to patchSharedType.

@@ -11,10 +11,13 @@ describe.only("getChanges", () =>
       [ { "foo": null, } ], // See GitHub Issue #32
       [ { "foo": undefined, } ], // See GitHub Issue #32
       [ { "foo": { "bar": 1, }, } ]
-    ])("Returns an empty list for two identical objects.", (a) =>
-    {
-      expect(getChanges(a, a)).toStrictEqual([]);
-    });
+    ])(
+      "Returns an empty list for two identical objects.",
+      (a) =>
+      {
+        expect(getChanges(a, a)).toStrictEqual([]);
+      }
+    );
 
     it.each([
       [
@@ -153,10 +156,13 @@ describe.only("getChanges", () =>
           ]
         ]
       ]
-    ])("Generates a change list for objects", (a, b, changes) =>
-    {
-      expect(getChanges(a, b)).toStrictEqual(changes);
-    });
+    ])(
+      "Returns a change list for objects",
+      (a, b, changes) =>
+      {
+        expect(getChanges(a, b)).toStrictEqual(changes);
+      }
+    );
 
     it("Ignores properties whose values are functions", () =>
     {
@@ -354,10 +360,13 @@ describe.only("getChanges", () =>
           ]
         ]
       ]
-    ])("Returns a change list for arrays", (a, b, changes) =>
-    {
-      expect(getChanges(a, b)).toStrictEqual(changes);
-    });
+    ])(
+      "Returns a change list for arrays",
+      (a, b, changes) =>
+      {
+        expect(getChanges(a, b)).toStrictEqual(changes);
+      }
+    );
   });
 
   describe("When given strings", () =>
@@ -427,10 +436,13 @@ describe.only("getChanges", () =>
           [ ChangeType.INSERT, 1, "d" ]
         ]
       ]
-    ])("Returns a change tuple for sequences that are different", (a, b, diff) =>
-    {
-      expect(getChanges(a, b)).toStrictEqual(diff);
-    });
+    ])(
+      "Returns a change tuple for sequences that are different",
+      (a, b, diff) =>
+      {
+        expect(getChanges(a, b)).toStrictEqual(diff);
+      }
+    );
 
     it.each([
       [
@@ -467,9 +479,12 @@ describe.only("getChanges", () =>
           [ ChangeType.DELETE, 15, undefined ]
         ]
       ]
-    ])("Adjusts indices to account for previous changes.", (a, b, diff) =>
-    {
-      expect(getChanges(a, b)).toStrictEqual(diff);
-    });
+    ])(
+      "Adjusts indices to account for previous changes.",
+      (a, b, diff) =>
+      {
+        expect(getChanges(a, b)).toStrictEqual(diff);
+      }
+    );
   });
 });
