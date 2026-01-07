@@ -13,22 +13,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v2
+      - uses: actions/setup-node@v4
         with:
-          node-version: 16
-          registry-url: https://npm.pkg.github.com/
+          node-version: 20
 
       - run: npm ci
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GH_TOKEN }}
 
       - run: npx commitlint --from HEAD~1 --to HEAD --verbose
 
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@v4
         if: ${{ failure() }}
         with:
           name: commitlint-error-log
@@ -39,20 +36,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v2
+      - uses: actions/setup-node@v4
         with:
-          node-version: 16
-          registry-url: https://npm.pkg.github.com/
+          node-version: 20
 
       - run: npm ci
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GH_TOKEN }}
 
       - run: npx eslint .
 
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@v4
         if: ${{ failure() }}
         with:
           name: eslint-error-log
@@ -63,20 +57,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v2
+      - uses: actions/setup-node@v4
         with:
-          node-version: 16
-          registry-url: https://npm.pkg.github.com/
+          node-version: 20
 
       - run: npm ci
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GH_TOKEN }}
 
       - run: npm run test
 
-      - uses: actions/upload-artifact@v2
+      - uses: actions/upload-artifact@v4
         if: ${{ failure() }}
         with:
           name: test-error-log
