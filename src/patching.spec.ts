@@ -688,10 +688,11 @@ describe("patchStore", () =>
   it("Returns original state when diff is empty", () =>
   {
     type State = { count: number };
-    const store = create<State>(() => ({ count: 0 }));
+    const store = create<State>(() =>
+      ({ "count": 0, }));
 
     // Using patchStore logic here to test patchState internal return
-    patchStore(store, { count: 0 });
+    patchStore(store, { "count": 0, });
     expect(store.getState().count).toBe(0);
   });
 });
