@@ -24,16 +24,16 @@ export const arrayToYArray = (array: any[]): Y.Array<any> =>
 
   array.forEach((value) =>
   {
-    if (value instanceof Array)
+    if (Array.isArray(value))
       yarray.push([ arrayToYArray(value) ]);
 
-    else if (value instanceof Object)
+    else if (typeof value === "object" && value !== null)
       yarray.push([ objectToYMap(value) ]);
 
     else if (typeof value === "string")
       yarray.push([ stringToYText(value) ]);
 
-    else
+    else if (typeof value !== "function")
       yarray.push([ value ]);
   });
 
@@ -105,16 +105,16 @@ export const objectToYMap = (object: any): Y.Map<any> =>
 
   Object.entries(object).forEach(([ property, value ]) =>
   {
-    if (value instanceof Array)
+    if (Array.isArray(value))
       ymap.set(property, arrayToYArray(value));
 
-    else if (value instanceof Object)
+    else if (typeof value === "object" && value !== null)
       ymap.set(property, objectToYMap(value));
 
     else if (typeof value === "string")
       ymap.set(property, stringToYText(value));
 
-    else
+    else if (typeof value !== "function")
       ymap.set(property, value);
   });
 

@@ -98,7 +98,13 @@ const yjs: YjsImpl = <S extends unknown>(
      */
     map.observeDeep(() =>
     {
-      patchStore(api, map.toJSON());
+      patchStore(
+        {
+          ...api,
+          "setState": originalSetState,
+        },
+        map.toJSON()
+      );
     });
 
     // Return the initial state to create or the next middleware.
