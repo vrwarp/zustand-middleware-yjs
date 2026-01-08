@@ -16,8 +16,21 @@ type Yjs = <
   options?: YjsOptions
 ) => StateCreator<T, Mps, Mcs>;
 
+/**
+ * Options for the Yjs middleware.
+ */
 export interface YjsOptions
 {
+  /**
+   * specific keys that should be treated as atomic strings.
+   *
+   * By default, strings in the Zustand store are converted to Y.Text objects
+   * in Yjs to support collaborative text editing. However, for some strings
+   * like UUIDs, Enums, or base64 data, this behavior is not desirable.
+   *
+   * Keys listed here will be stored as primitive strings in the Yjs map,
+   * bypassing the Y.Text conversion.
+   */
   atomicKeys?: string[];
 }
 
