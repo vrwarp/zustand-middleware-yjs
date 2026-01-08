@@ -85,14 +85,20 @@ const getArrayChanges = (a: Array<any>, b: Array<any>): Change[] =>
     if (b[bIndex] === undefined)
       changeList.push([ ChangeType.DELETE, index, undefined ]);
 
-    else if (isDiffable(value) && isDiffable(b[bIndex]) && isSameType(value, b[bIndex]))
+    else if (isDiffable(value)
+      && isDiffable(b[bIndex])
+      && isSameType(value, b[bIndex]))
     {
       const currentDiff = getChanges(value, b[bIndex]);
-      const nextDiff = typeof b[bIndex + 1] === "undefined"
-        ? []
-        : getChanges(value, b[bIndex+1]);
+      const nextDiff = typeof b[bIndex + 1] !== "undefined"
+                       && isDiffable(b[bIndex+1])
+                       && isSameType(value, b[bIndex+1])
+        ? getChanges(value, b[bIndex+1])
+        : null;
 
-      if (typeof b[bIndex+1] !== "undefined" && nextDiff.length === 0 && currentDiff.length !== 0)
+      if (nextDiff !== null
+        && nextDiff.length === 0
+        && currentDiff.length !== 0)
       {
         changeList.push([ ChangeType.INSERT, index, b[bIndex] ]);
         finalIndices += 2;
@@ -153,7 +159,9 @@ const getRecordChanges = (
     if (!(property in a))
       changeList.push([ ChangeType.INSERT, property, value ]);
 
-    else if (isDiffable(a[property]) && isDiffable(value) && isSameType(a[property], value))
+    else if (isDiffable(a[property])
+      && isDiffable(value)
+      && isSameType(a[property], value))
     {
       const d = getChanges(a[property], value);
 
