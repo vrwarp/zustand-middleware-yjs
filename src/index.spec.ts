@@ -937,4 +937,89 @@ describe("Yjs middleware in React", () =>
     expect(doc2.getMap("hello").get("count")).toBe(1); // Sanity check
     expect(result2.current.count).toBe(1); // Actual issue
   });
+
+  describe("When using the onLoaded callback", () =>
+  {
+    it("Calls onLoaded when the store is first loaded from the Yjs document.", async () =>
+    {
+      const doc1 = new Y.Doc();
+      const doc2 = new Y.Doc();
+
+      doc1.on("update", (update: any) =>
+      {
+        Y.applyUpdate(doc2, update);
+      });
+      doc2.on("update", (update: any) =>
+      {
+        Y.applyUpdate(doc1, update);
+      });
+
+      const storeName = "store";
+      const onLoaded = jest.fn();
+
+      type Store = { count: number, increment: () => void };
+
+      const { "getState": getStateA, } =
+        createVanilla<Store>(yjs(
+          doc1,
+          storeName,
+          (set) =>
+            ({
+              "count": 0,
+              "increment": () =>
+                set((state) =>
+                  ({ "count": state.count + 1, })),
+            })
+        ));
+
+      /*
+       * Create the second store, which should receive the initial state from the first store.
+       * onLoaded should be called when the first update is received.
+       */
+      createVanilla<Store>(yjs(
+        doc2,
+        storeName,
+        (set) =>
+          ({
+            "count": 0,
+            "increment": () =>
+              set((state) =>
+                ({ "count": state.count + 1, })),
+          }),
+        {
+          "onLoaded": onLoaded,
+        }
+      ));
+
+      expect(onLoaded).not.toHaveBeenCalled();
+
+      // Trigger an update from doc1.
+      getStateA().increment();
+
+      expect(onLoaded).toHaveBeenCalled();
+    });
+
+    it("Calls onLoaded immediately if the store is already populated.", () =>
+    {
+      const doc = new Y.Doc();
+      const map = doc.getMap("store");
+      map.set("count", 1);
+
+      const onLoaded = jest.fn();
+
+      type Store = { count: number };
+
+      createVanilla<Store>(yjs(
+        doc,
+        "store",
+        () =>
+          ({ "count": 0, }),
+        {
+          "onLoaded": onLoaded,
+        }
+      ));
+
+      expect(onLoaded).toHaveBeenCalled();
+    });
+  });
 });

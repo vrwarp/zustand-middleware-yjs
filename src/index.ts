@@ -32,6 +32,11 @@ export interface YjsOptions
    * bypassing the Y.Text conversion.
    */
   atomicKeys?: string[];
+
+  /**
+   * A callback that is called when the store is first loaded from the Yjs document.
+   */
+  onLoaded?: () => void;
 }
 
 type YjsImpl = <T extends unknown>(
@@ -77,6 +82,15 @@ const yjs: YjsImpl = <S extends unknown>(
   // Augment the store.
   return (set, get, api) =>
   {
+    // Initialize the loading state.
+    let loaded = false;
+
+    if (map.size > 0)
+    {
+      loaded = true;
+      options?.onLoaded?.();
+    }
+
     /*
      * Capture the initial state so that we can initialize the Yjs store to the
      * same values as the initial values of the Zustand store.
@@ -90,7 +104,7 @@ const yjs: YjsImpl = <S extends unknown>(
       {
         set(partial, replace);
         doc.transact(() =>
-          patchSharedType(map, get(), options));
+          patchSharedType(map, get(), options), api);
       },
       get,
       api
@@ -101,7 +115,7 @@ const yjs: YjsImpl = <S extends unknown>(
     {
       originalSetState(partial, replace);
       doc.transact(() =>
-        patchSharedType(map, api.getState(), options));
+        patchSharedType(map, api.getState(), options), api);
     };
 
     /*
@@ -118,8 +132,14 @@ const yjs: YjsImpl = <S extends unknown>(
      * Zustand store. We avoid using the Yjs enabled set to prevent unnecessary
      * ping-pong of updates.
      */
-    map.observeDeep(() =>
+    map.observeDeep((_, transaction) =>
     {
+      if (!loaded && transaction.origin !== api)
+      {
+        loaded = true;
+        options?.onLoaded?.();
+      }
+
       patchStore(
         {
           ...api,
