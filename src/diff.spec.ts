@@ -1,7 +1,7 @@
 import { ChangeType, } from "./types";
 import { getChanges, } from "./diff";
 
-describe.only("getChanges", () =>
+describe("getChanges", () =>
 {
   describe("When given objects", () =>
   {
@@ -282,14 +282,14 @@ describe.only("getChanges", () =>
         [ { "foo": 1, }, { "foo": 2, } ],
         [ { "foo": 1, }, { "foo": 1, }, { "foo": 2, } ],
         [
-          [ ChangeType.INSERT, 0, { "foo": 1, } ]
+          [ ChangeType.INSERT, 1, { "foo": 1, } ]
         ]
       ],
       [
         [ { "foo": 1, }, { "foo": 2, }, { "foo": 3, } ],
         [ { "foo": 1, }, { "foo": 2, }, { "foo": 2, }, { "foo": 3, } ],
         [
-          [ ChangeType.INSERT, 1, { "foo": 2, } ]
+          [ ChangeType.INSERT, 2, { "foo": 2, } ]
         ]
       ],
       [

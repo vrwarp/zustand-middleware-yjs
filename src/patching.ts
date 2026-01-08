@@ -33,9 +33,9 @@ export const patchSharedType = (
         {
           if (typeof value === "string")
             sharedType.set(property as string, stringToYText(value));
-          else if (value instanceof Array)
+          else if (Array.isArray(value))
             sharedType.set(property as string, arrayToYArray(value));
-          else if (value instanceof Object)
+          else if (typeof value === "object" && value !== null)
             sharedType.set(property as string, objectToYMap(value));
           else
             sharedType.set(property as string, value);
@@ -50,9 +50,9 @@ export const patchSharedType = (
 
           if (typeof value === "string")
             sharedType.insert(index, [ stringToYText(value) ]);
-          else if (value instanceof Array)
+          else if (Array.isArray(value))
             sharedType.insert(index, [ arrayToYArray(value) ]);
-          else if (value instanceof Object)
+          else if (typeof value === "object" && value !== null)
             sharedType.insert(index, [ objectToYMap(value) ]);
           else
             sharedType.insert(index, [ value ]);
@@ -126,53 +126,63 @@ export const patchState = (oldState: any, newState: any): any =>
   {
     if (typeof state === "string")
       return applyChangesToString(state as string, changes);
-    else if (state instanceof Array)
+    else if (Array.isArray(state))
       return applyChangesToArray(state as any[], changes);
-    else if (state instanceof Object)
+    else if (typeof state === "object" && state !== null)
       return applyChangesToObject(state as Record<string, any>, changes);
   };
 
   const applyChangesToArray = (array: any[], changes: Change[]): any =>
-    changes
+  {
+    const deletes = changes
+      .filter(([ type ]) =>
+        type === ChangeType.DELETE)
       .sort(([ , indexA ], [ , indexB ]) =>
-        Math.sign((indexA as number) - (indexB as number)))
-      .reduce(
-        (revisedArray, [ type, index, value ]) =>
+        Math.sign((indexB as number) - (indexA as number))); // Descending
+
+    const others = changes
+      .filter(([ type ]) =>
+        type !== ChangeType.DELETE)
+      .sort(([ , indexA ], [ , indexB ]) =>
+        Math.sign((indexA as number) - (indexB as number))); // Ascending
+
+    deletes.forEach(([ , index ]) =>
+    {
+      array.splice(index as number, 1);
+    });
+
+    return others.reduce(
+      (revisedArray, [ type, index, value ]) =>
+      {
+        switch (type)
         {
-          switch (type)
-          {
-          case ChangeType.INSERT:
-          {
-            revisedArray.splice(index as number, 0, value);
-            return revisedArray;
-          }
+        case ChangeType.INSERT:
+        {
+          revisedArray.splice(index as number, 0, value);
+          return revisedArray;
+        }
 
-          case ChangeType.UPDATE:
-          {
-            revisedArray[index as number] = value;
-            return revisedArray;
-          }
+        case ChangeType.UPDATE:
+        {
+          revisedArray[index as number] = value;
+          return revisedArray;
+        }
 
-          case ChangeType.PENDING:
-          {
-            revisedArray[index as number] =
-              applyChanges(array[index as number], value);
-            return revisedArray;
-          }
+        case ChangeType.PENDING:
+        {
+          revisedArray[index as number] =
+            applyChanges(array[index as number], value);
+          return revisedArray;
+        }
 
-          case ChangeType.DELETE:
-          {
-            revisedArray.splice(index as number, 1);
-            return revisedArray;
-          }
-
-          case ChangeType.NONE:
-          default:
-            return revisedArray;
-          }
-        },
-        array
-      );
+        case ChangeType.NONE:
+        default:
+          return revisedArray;
+        }
+      },
+      array
+    );
+  };
 
   const applyChangesToObject = (
     object: Record<string, any>,
