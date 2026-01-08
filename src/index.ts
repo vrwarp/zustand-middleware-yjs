@@ -12,13 +12,20 @@ type Yjs = <
 >(
   doc: Y.Doc,
   name: string,
-  f: StateCreator<T, Mps, Mcs>
+  f: StateCreator<T, Mps, Mcs>,
+  options?: YjsOptions
 ) => StateCreator<T, Mps, Mcs>;
+
+export interface YjsOptions
+{
+  atomicKeys?: string[];
+}
 
 type YjsImpl = <T extends unknown>(
   doc: Y.Doc,
   name: string,
-  config: StateCreator<T, [], []>
+  config: StateCreator<T, [], []>,
+  options?: YjsOptions
 ) => StateCreator<T, [], []>;
 
 
@@ -41,12 +48,14 @@ type YjsImpl = <T extends unknown>(
  * @param doc The Yjs document to create the store in.
  * @param name The name that the store should be listed under in the doc.
  * @param config The initial state of the store we should be using.
+ * @param options The options for the middleware.
  * @returns A Zustand state creator.
  */
 const yjs: YjsImpl = <S extends unknown>(
   doc: Y.Doc,
   name: string,
-  config: StateCreator<S>
+  config: StateCreator<S>,
+  options?: YjsOptions
 ): StateCreator<S> =>
 {
   // The root Y.Map that the store is written and read from.
@@ -68,7 +77,7 @@ const yjs: YjsImpl = <S extends unknown>(
       {
         set(partial, replace);
         doc.transact(() =>
-          patchSharedType(map, get()));
+          patchSharedType(map, get(), options));
       },
       get,
       api
@@ -79,7 +88,7 @@ const yjs: YjsImpl = <S extends unknown>(
     {
       originalSetState(partial, replace);
       doc.transact(() =>
-        patchSharedType(map, api.getState()));
+        patchSharedType(map, api.getState(), options));
     };
 
     /*

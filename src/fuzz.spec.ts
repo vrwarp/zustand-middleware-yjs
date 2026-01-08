@@ -24,7 +24,8 @@ describe("Fuzz testing", () =>
       "object": fc.dictionary(safeString, tie("json"), { "maxKeys": 3, }),
     })).json;
 
-  it("Should maintain consistency between Zustand store and Yjs doc with random operations", () =>
+  it("Should maintain consistency between Zustand store and Yjs doc with "
+    + "random operations", () =>
   {
     fc.assert(fc.property(
       fc.array(
@@ -77,7 +78,8 @@ describe("Fuzz testing", () =>
     ));
   });
 
-  it("Should maintain consistency between two peers with random concurrent operations", () =>
+  it("Should maintain consistency between two peers with random concurrent "
+    + "operations", () =>
   {
     fc.assert(fc.property(
       fc.array(

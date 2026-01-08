@@ -18,17 +18,20 @@ import * as Y from "yjs";
  * @returns A YArray.
  */
 // eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
-export const arrayToYArray = (array: any[]): Y.Array<any> =>
+export const arrayToYArray = (
+  array: any[],
+  options?: { atomicKeys?: string[] }
+): Y.Array<any> =>
 {
   const yarray = new Y.Array();
 
   array.forEach((value) =>
   {
     if (Array.isArray(value))
-      yarray.push([ arrayToYArray(value) ]);
+      yarray.push([ arrayToYArray(value, options) ]);
 
     else if (typeof value === "object" && value !== null)
-      yarray.push([ objectToYMap(value) ]);
+      yarray.push([ objectToYMap(value, options) ]);
 
     else if (typeof value === "string")
       yarray.push([ stringToYText(value) ]);
@@ -99,20 +102,28 @@ export const yArrayToArray = (yarray: Y.Array<any>): any[] =>
  * @returns A YMap.
  */
 // eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
-export const objectToYMap = (object: any): Y.Map<any> =>
+export const objectToYMap = (
+  object: Record<string, any>,
+  options?: { atomicKeys?: string[] }
+): Y.Map<any> =>
 {
   const ymap = new Y.Map();
 
   Object.entries(object).forEach(([ property, value ]) =>
   {
     if (Array.isArray(value))
-      ymap.set(property, arrayToYArray(value));
+      ymap.set(property, arrayToYArray(value, options));
 
     else if (typeof value === "object" && value !== null)
-      ymap.set(property, objectToYMap(value));
+      ymap.set(property, objectToYMap(value, options));
 
     else if (typeof value === "string")
-      ymap.set(property, stringToYText(value));
+    {
+      if (options?.atomicKeys?.includes(property))
+        ymap.set(property, value);
+      else
+        ymap.set(property, stringToYText(value));
+    }
 
     else if (typeof value !== "function")
       ymap.set(property, value);
