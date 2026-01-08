@@ -134,6 +134,7 @@ export const patchState = (oldState: any, newState: any): any =>
 
   const applyChangesToArray = (array: any[], changes: Change[]): any =>
   {
+    const revisedArray = [ ...array ];
     const deletes = changes
       .filter(([ type ]) =>
         type === ChangeType.DELETE)
@@ -148,39 +149,39 @@ export const patchState = (oldState: any, newState: any): any =>
 
     deletes.forEach(([ , index ]) =>
     {
-      array.splice(index as number, 1);
+      revisedArray.splice(index as number, 1);
     });
 
     return others.reduce(
-      (revisedArray, [ type, index, value ]) =>
+      (currentArray, [ type, index, value ]) =>
       {
         switch (type)
         {
         case ChangeType.INSERT:
         {
-          revisedArray.splice(index as number, 0, value);
-          return revisedArray;
+          currentArray.splice(index as number, 0, value);
+          return currentArray;
         }
 
         case ChangeType.UPDATE:
         {
-          revisedArray[index as number] = value;
-          return revisedArray;
+          currentArray[index as number] = value;
+          return currentArray;
         }
 
         case ChangeType.PENDING:
         {
-          revisedArray[index as number] =
-            applyChanges(array[index as number], value);
-          return revisedArray;
+          currentArray[index as number] =
+            applyChanges(currentArray[index as number], value);
+          return currentArray;
         }
 
         case ChangeType.NONE:
         default:
-          return revisedArray;
+          return currentArray;
         }
       },
-      array
+      revisedArray
     );
   };
 
@@ -218,7 +219,7 @@ export const patchState = (oldState: any, newState: any): any =>
             return revisedObject;
           }
         },
-        object as Record<string, any>
+        { ...object, }
       );
 
   const applyChangesToString = (string: string, changes: Change[]): any =>
