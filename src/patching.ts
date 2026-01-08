@@ -16,7 +16,8 @@ import { StoreApi, } from "zustand/vanilla";
 export const patchSharedType = (
   sharedType: Y.Map<any> | Y.Array<any> | Y.Text,
   // eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
-  newState: any
+  newState: any,
+  options?: { atomicKeys?: string[] }
 ): void =>
 {
   const changes = getChanges(sharedType.toJSON(), newState);
@@ -32,11 +33,16 @@ export const patchSharedType = (
         if (sharedType instanceof Y.Map)
         {
           if (typeof value === "string")
-            sharedType.set(property as string, stringToYText(value));
+          {
+            if (options?.atomicKeys?.includes(property as string))
+              sharedType.set(property as string, value);
+            else
+              sharedType.set(property as string, stringToYText(value));
+          }
           else if (Array.isArray(value))
-            sharedType.set(property as string, arrayToYArray(value));
+            sharedType.set(property as string, arrayToYArray(value, options));
           else if (typeof value === "object" && value !== null)
-            sharedType.set(property as string, objectToYMap(value));
+            sharedType.set(property as string, objectToYMap(value, options));
           else
             sharedType.set(property as string, value);
         }
@@ -51,9 +57,9 @@ export const patchSharedType = (
           if (typeof value === "string")
             sharedType.insert(index, [ stringToYText(value) ]);
           else if (Array.isArray(value))
-            sharedType.insert(index, [ arrayToYArray(value) ]);
+            sharedType.insert(index, [ arrayToYArray(value, options) ]);
           else if (typeof value === "object" && value !== null)
-            sharedType.insert(index, [ objectToYMap(value) ]);
+            sharedType.insert(index, [ objectToYMap(value, options) ]);
           else
             sharedType.insert(index, [ value ]);
         }
@@ -86,14 +92,16 @@ export const patchSharedType = (
       {
         patchSharedType(
           sharedType.get(property as string),
-          newState[property as string]
+          newState[property as string],
+          options
         );
       }
       else if (sharedType instanceof Y.Array)
       {
         patchSharedType(
           sharedType.get(property as number),
-          newState[property as number]
+          newState[property as number],
+          options
         );
       }
       break;
