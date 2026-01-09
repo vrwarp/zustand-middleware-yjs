@@ -1,0 +1,203 @@
+zustand-middleware-yjs
+======================
+
+Project Overview
+----------------
+
+`zustand-middleware-yjs` is a middleware for the Zustand state management library that creates a two-way binding between a Zustand store and a Yjs shared data structure (specifically a `Y.Map`). This enables:
+
+1.  **Real-time Collaboration**: State changes are instantly propagated to other peers connected via Yjs providers.
+
+2.  **Offline-First**: State persists locally and syncs automatically when a connection is restored.
+
+3.  **Conflict Resolution**: Uses Yjs CRDTs (Conflict-free Replicated Data Types) to merge concurrent updates deterministically.
+
+Installation
+------------
+
+```
+npm install github:vrwarp/zustand-middleware-yjs yjs
+
+```
+
+Core API
+--------
+
+### `yjs(config, options)`
+
+The primary export is a middleware function that wraps a Zustand state creator.
+
+#### Parameters
+
+1.  **`config`** (`StateCreator`): The standard Zustand state creator function `(set, get, api) => State`.
+
+2.  **`options`** (`YjsMiddlewareOptions`): Configuration object.
+
+#### `YjsMiddlewareOptions` Interface
+
+```
+interface YjsMiddlewareOptions {
+  /**
+   * The Yjs Document instance to bind to.
+   * This document is the source of truth for synchronization.
+   */
+  doc: Y.Doc;
+
+  /**
+   * The name of the root Y.Map within the document.
+   * All store state will be nested under this map.
+   * Defaults to 'shared'.
+   *
+   * Important: If multiple stores share the same Y.Doc,
+   * they MUST have unique names to avoid overwriting each other.
+   */
+  name?: string;
+}
+
+```
+
+Data Synchronization Model
+--------------------------
+
+The middleware maps JavaScript/Zustand data types to Yjs shared types automatically. This mapping is recursive.
+
+-   **`Object` (Plain)** → `Y.Map` Keys are observed. Changes to properties trigger Yjs updates.
+
+-   **`Array`** → `Y.Array` Pushes, splices, and inserts are mapped to Yjs array operations.
+
+-   **`Primitive` (string, number, boolean)** → Native Stored as primitive values within the parent `Y.Map` or `Y.Array`.
+
+-   **`Function`** → *Ignored* Functions (actions) are NOT synced. They remain local to the store instance.
+
+### Conflict Resolution Strategy
+
+-   **Objects/Maps**: Last-Write-Wins (LWW) granularity per key.
+
+-   **Arrays**: standard CRDT list merging (concurrent inserts are preserved).
+
+Usage Patterns
+--------------
+
+### 1\. Basic Store Setup
+
+This is the standard boilerplate for connecting a store.
+
+```
+import { create } from 'zustand';
+import { yjs } from 'zustand-middleware-yjs';
+import * as Y from 'yjs';
+
+// 1. Initialize the Yjs Doc
+const ydoc = new Y.Doc();
+
+// 2. Create Store
+const useStore = create(
+  yjs(
+    (set) => ({
+      // State
+      count: 0,
+      user: { name: 'Anonymous' },
+
+      // Actions (Not synced, but trigger synced state updates)
+      increment: () => set((state) => ({ count: state.count + 1 })),
+      updateName: (name) => set((state) => ({ user: { ...state.user, name } }))
+    }),
+    {
+      doc: ydoc,
+      name: 'main-store' // Unique namespace in the Y.Doc
+    }
+  )
+);
+
+```
+
+### 2\. Connecting to a Network Provider
+
+The middleware syncs Zustand <-> Yjs. To sync Yjs <-> Other Users, you must attach a generic Yjs provider (WebRTC, WebSocket, IndexedDB).
+
+```
+import { WebrtcProvider } from 'y-webrtc';
+
+// ... (store setup from above)
+
+// 3. Connect the doc to the network
+// The middleware will automatically react to updates coming from this provider.
+const provider = new WebrtcProvider('my-room-name', ydoc);
+
+```
+
+### 3\. Handling Arrays and Nested Objects
+
+The middleware handles diffing for nested updates. You can use standard immutable patterns.
+
+```
+const useTodoList = create(
+  yjs(
+    (set) => ({
+      todos: [], // Maps to Y.Array
+
+      addTodo: (text) => set((state) => ({
+        // Appends to the Y.Array
+        todos: [...state.todos, { id: Date.now(), text, done: false }]
+      })),
+
+      toggleTodo: (id) => set((state) => ({
+        // Updates the specific item in the Y.Array/Y.Map structure
+        todos: state.todos.map(todo =>
+          todo.id === id ? { ...todo, done: !todo.done } : todo
+        )
+      })),
+
+      removeTodo: (id) => set((state) => ({
+        // Performs a delete operation on the Y.Array
+        todos: state.todos.filter(t => t.id !== id)
+      }))
+    }),
+    { doc: ydoc, name: 'todos' }
+  )
+);
+
+```
+
+Best Practices & Gotchas
+------------------------
+
+1.  **Initialization Logic**:
+
+    -   If the `Y.Doc` contains data when the store mounts (e.g., loaded from IndexedDB or received from a peer), the middleware **overwrites** the initial state defined in `create(...)` with the data from Yjs.
+
+    -   *Tip*: Do not rely on the initial state values in `create(...)` being the source of truth if persistent data exists.
+
+2.  **Immutability is Critical**:
+
+    -   Although Yjs is mutable, Zustand relies on immutable updates. Always return *new* objects/arrays in your `set` functions. The middleware diffs the new state against the old state to calculate the Yjs patches.
+
+    -   *Bad*: `state.items.push(x)`
+
+    -   *Good*: `items: [...state.items, x]`
+
+3.  **Transient State**:
+
+    -   If you have state that should *not* be synced (e.g., `isLoading`, `uiState`), keep it in a separate Zustand store or a separate slice that is NOT wrapped with `yjs`. Currently, the middleware syncs the entire state object returned by the store.
+
+4.  **Circular References**:
+
+    -   Do not store data with circular references. Yjs does not support them, and the middleware will likely throw a stack overflow error during the diffing process.
+
+Type Definition for LLM Context
+-------------------------------
+
+For TypeScript usage, the signature simplifies to:
+
+```
+import { StateCreator } from 'zustand';
+import * as Y from 'yjs';
+
+declare module 'zustand-middleware-yjs' {
+  export function yjs<T>(
+    config: StateCreator<T>,
+    options: { doc: Y.Doc; name?: string }
+  ): StateCreator<T>;
+}
+
+```
