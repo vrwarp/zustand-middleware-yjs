@@ -1,10 +1,11 @@
 import { spawn, ChildProcess, } from "child_process";
 import path from "path";
 
-import { act, renderHook, } from "@testing-library/react-hooks";
+import { act, renderHook, } from "@testing-library/react";
 
 import { createStore as createVanilla, } from "zustand/vanilla";
 import { create, } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 
 import * as Y from "yjs";
 import { WebsocketProvider, } from "y-websocket";
@@ -689,7 +690,7 @@ describe("Yjs middleware", () =>
 
 describe("Yjs middleware with network provider", () =>
 {
-  // eslint-disable-next-line @typescript-eslint/init-declarations
+
   let server: ChildProcess;
   const port = 1234;
 
@@ -849,12 +850,12 @@ describe("Yjs middleware in React", () =>
       ));
 
     const { result, } = renderHook(() =>
-      useStore(({ count, increment, someOtherData, }) =>
+      useStore(useShallow(({ count, increment, someOtherData, }) =>
         ({
           "count": count,
           "increment": increment,
           "someOtherData": someOtherData,
-        })));
+        }))));
 
     act(() =>
     {
@@ -916,18 +917,18 @@ describe("Yjs middleware in React", () =>
       ));
 
     const { "result": result1, } = renderHook(() =>
-      useStore1(({ count, increment, }) =>
+      useStore1(useShallow(({ count, increment, }) =>
         ({
           "count": count,
           "increment": increment,
-        })));
+        }))));
 
     const { "result": result2, } = renderHook(() =>
-      useStore2(({ count, increment, }) =>
+      useStore2(useShallow(({ count, increment, }) =>
         ({
           "count": count,
           "increment": increment,
-        })));
+        }))));
 
     act(() =>
     {

@@ -2,7 +2,7 @@
  * Describes the change that needs to be made.
  */
 export enum ChangeType
-{ // eslint-disable-line @typescript-eslint/indent
+{
   /** No change. */
   NONE = "none",
   /** A value was inserted. */
