@@ -15,7 +15,7 @@ import { StoreApi, } from "zustand/vanilla";
  */
 export const patchSharedType = (
   sharedType: Y.Map<any> | Y.Array<any> | Y.Text,
-  // eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
+
   newState: any,
   options?: { atomicKeys?: string[] }
 ): void =>
@@ -122,7 +122,7 @@ export const patchSharedType = (
  *
  * @returns The patched oldState, identical to newState.
  */
-// eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
+
 export const patchState = (oldState: any, newState: any): any =>
 {
   const changes = getChanges(oldState, newState);
@@ -275,9 +275,9 @@ export const patchState = (oldState: any, newState: any): any =>
  * @param store The Zustand API that manages the store we want to patch.
  * @param newState The new state that the Zustand store should be patched to.
  */
-export const patchStore = <S extends unknown>(
+export const patchStore = <S>(
   store: StoreApi<S>,
-  // eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
+
   newState: any
 ): void =>
 {

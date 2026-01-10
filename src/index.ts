@@ -6,7 +6,7 @@ import * as Y from "yjs";
 import { patchSharedType, patchStore, } from "./patching";
 
 type Yjs = <
-  T extends unknown,
+  T,
   Mps extends [StoreMutatorIdentifier, unknown][] = [],
   Mcs extends [StoreMutatorIdentifier, unknown][] = []
 >(
@@ -39,7 +39,7 @@ export interface YjsOptions
   onLoaded?: () => void;
 }
 
-type YjsImpl = <T extends unknown>(
+type YjsImpl = <T>(
   doc: Y.Doc,
   name: string,
   config: StateCreator<T, [], []>,
@@ -69,7 +69,7 @@ type YjsImpl = <T extends unknown>(
  * @param options The options for the middleware.
  * @returns A Zustand state creator.
  */
-const yjs: YjsImpl = <S extends unknown>(
+const yjs: YjsImpl = <S>(
   doc: Y.Doc,
   name: string,
   config: StateCreator<S>,
@@ -102,7 +102,7 @@ const yjs: YjsImpl = <S extends unknown>(
        */
       (partial, replace) =>
       {
-        set(partial, replace);
+        set(partial as any, replace as any);
         doc.transact(() =>
           patchSharedType(map, get(), options), api);
       },
@@ -113,7 +113,7 @@ const yjs: YjsImpl = <S extends unknown>(
     const originalSetState = api.setState;
     api.setState = (partial, replace) =>
     {
-      originalSetState(partial, replace);
+      originalSetState(partial as any, replace as any);
       doc.transact(() =>
         patchSharedType(map, api.getState(), options), api);
     };

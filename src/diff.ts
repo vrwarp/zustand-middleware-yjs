@@ -273,7 +273,7 @@ const _diffText = (a: string, b: string, isReversed: boolean): Change[] =>
       "y": pathPositions[k].y,
     };
 
-    k = pathPositions[k].k; // eslint-disable-line prefer-destructuring
+    k = pathPositions[k].k;
   }
 
   const changeList: Change[] = [];

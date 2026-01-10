@@ -17,7 +17,7 @@ import * as Y from "yjs";
  * @param array The array to transform into a YArray
  * @returns A YArray.
  */
-// eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
+
 export const arrayToYArray = (
   array: any[],
   options?: { atomicKeys?: string[] }
@@ -80,7 +80,7 @@ export const arrayToYArray = (
  * @param yarray The YArray to convert to a plain array.
  * @returns A plain JavaScript array.
  */
-// eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
+
 export const yArrayToArray = (yarray: Y.Array<any>): any[] =>
   yarray.toJSON();
 
@@ -101,7 +101,7 @@ export const yArrayToArray = (yarray: Y.Array<any>): any[] =>
  * @param object The object to turn into a YMap shared type.
  * @returns A YMap.
  */
-// eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
+
 export const objectToYMap = (
   object: Record<string, any>,
   options?: { atomicKeys?: string[] }
@@ -169,7 +169,7 @@ export const objectToYMap = (
  * @param ymap YMap to convert to a plain JavaScript object.
  * @returns A plain JavaScript object.
  */
-// eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
+
 export const yMapToObject = (ymap: Y.Map<any>): any =>
   ymap.toJSON();
 
