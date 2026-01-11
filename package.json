@@ -18,13 +18,13 @@
     "shared-editing",
     "realtime"
   ],
-  "homepage": "https://github.com/joebobmiles/zustand-middleware-yjs",
+  "homepage": "https://github.com/vrwarp/zustand-middleware-yjs",
   "repository": {
     "type": "git",
-    "url": "https://github.com/joebobmiles/zustand-middleware-yjs"
+    "url": "git+https://github.com/vrwarp/zustand-middleware-yjs.git"
   },
   "bugs": {
-    "url": "https://github.com/joebobmiles/zustand-middleware-yjs/issues"
+    "url": "https://github.com/vrwarp/zustand-middleware-yjs/issues"
   },
   "author": {
     "name": "Joseph R Miles",
@@ -55,6 +55,7 @@
     "prepare": "husky install && npm run build"
   },
   "dependencies": {
+    "original-package-name": "git+https://github.com/joebobmiles/zustand-middleware-yjs.git",
     "use-sync-external-store": "^1.6.0",
     "yjs": "^13.5.11",
     "zustand": "^5.0.9"
