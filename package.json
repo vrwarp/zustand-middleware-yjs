@@ -51,7 +51,7 @@
     "test:watch": "jest --watch",
     "test:debug": "node --inspect-brk ./node_modules/jest/bin/jest.js --runInBand",
     "build": "rollup --config rollup.config.ts --configPlugin typescript",
-    "prepare": "husky install"
+    "prepare": "husky install && npm run build"
   },
   "dependencies": {
     "use-sync-external-store": "^1.6.0",
