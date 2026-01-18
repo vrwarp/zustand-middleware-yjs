@@ -20,7 +20,7 @@ import * as Y from "yjs";
 
 export const arrayToYArray = (
   array: any[],
-  options?: { atomicKeys?: string[] }
+  options?: { atomicKeys?: string[], subdocKeys?: string[] }
 ): Y.Array<any> =>
 {
   const yarray = new Y.Array();
@@ -81,8 +81,64 @@ export const arrayToYArray = (
  * @returns A plain JavaScript array.
  */
 
-export const yArrayToArray = (yarray: Y.Array<any>): any[] =>
-  yarray.toJSON();
+export const yArrayToArray = (yarray: Y.Array<any>): any[] => {
+  return yarray.map((value) => {
+    if (value instanceof Y.Map) return yMapToObject(value);
+    if (value instanceof Y.Array) return yArrayToArray(value);
+    if (value instanceof Y.Text) return yTextToString(value);
+    if (value instanceof Y.Doc) {
+      if (value.shouldLoad) {
+        return yMapToObject(value.getMap("root"));
+      } else {
+        value.load();
+        return null;
+      }
+    }
+    return value;
+  });
+};
+
+/**
+ * Populates a YMap with data from a JavaScript object.
+ *
+ * @param ymap The YMap to populate.
+ * @param object The object containing data.
+ * @param options Options for conversion.
+ */
+export const populateYMap = (
+  ymap: Y.Map<any>,
+  object: Record<string, any>,
+  options?: { atomicKeys?: string[], subdocKeys?: string[] }
+): void => {
+  Object.entries(object).forEach(([ property, value ]) =>
+  {
+    if (options?.subdocKeys?.includes(property)) {
+      const subdoc = new Y.Doc();
+      if (typeof value === "object" && value !== null) {
+        populateYMap(subdoc.getMap("root"), value, options);
+      }
+      ymap.set(property, subdoc);
+      return;
+    }
+
+    if (Array.isArray(value))
+      ymap.set(property, arrayToYArray(value, options));
+
+    else if (typeof value === "object" && value !== null)
+      ymap.set(property, objectToYMap(value, options));
+
+    else if (typeof value === "string")
+    {
+      if (options?.atomicKeys?.includes(property))
+        ymap.set(property, value);
+      else
+        ymap.set(property, stringToYText(value));
+    }
+
+    else if (typeof value !== "function")
+      ymap.set(property, value);
+  });
+};
 
 /**
  * Converts a normal JavaScript object into a YMap shared type. Any nested
@@ -104,31 +160,11 @@ export const yArrayToArray = (yarray: Y.Array<any>): any[] =>
 
 export const objectToYMap = (
   object: Record<string, any>,
-  options?: { atomicKeys?: string[] }
+  options?: { atomicKeys?: string[], subdocKeys?: string[] }
 ): Y.Map<any> =>
 {
   const ymap = new Y.Map();
-
-  Object.entries(object).forEach(([ property, value ]) =>
-  {
-    if (Array.isArray(value))
-      ymap.set(property, arrayToYArray(value, options));
-
-    else if (typeof value === "object" && value !== null)
-      ymap.set(property, objectToYMap(value, options));
-
-    else if (typeof value === "string")
-    {
-      if (options?.atomicKeys?.includes(property))
-        ymap.set(property, value);
-      else
-        ymap.set(property, stringToYText(value));
-    }
-
-    else if (typeof value !== "function")
-      ymap.set(property, value);
-  });
-
+  populateYMap(ymap, object, options);
   return ymap;
 };
 
@@ -170,8 +206,25 @@ export const objectToYMap = (
  * @returns A plain JavaScript object.
  */
 
-export const yMapToObject = (ymap: Y.Map<any>): any =>
-  ymap.toJSON();
+export const yMapToObject = (ymap: Y.Map<any>): any => {
+  const obj: Record<string, any> = {};
+  ymap.forEach((value, key) => {
+    if (value instanceof Y.Map) obj[key] = yMapToObject(value);
+    else if (value instanceof Y.Array) obj[key] = yArrayToArray(value);
+    else if (value instanceof Y.Text) obj[key] = yTextToString(value);
+    else if (value instanceof Y.Doc) {
+      if (value.shouldLoad) {
+        obj[key] = yMapToObject(value.getMap("root"));
+      } else {
+        value.load();
+        obj[key] = null;
+      }
+    } else {
+      obj[key] = value;
+    }
+  });
+  return obj;
+};
 
 export const yTextToString = (ytext: Y.Text): string =>
   ytext.toString();
