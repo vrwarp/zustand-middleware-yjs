@@ -1,8 +1,15 @@
 import * as Y from "yjs";
 import { ChangeType, Change, } from "./types";
 import { getChanges, } from "./diff";
-import { arrayToYArray, objectToYMap, stringToYText, } from "./mapping";
+import { arrayToYArray, objectToYMap, stringToYText, yMapToObject, yArrayToArray, yTextToString, populateYMap } from "./mapping";
 import { StoreApi, } from "zustand/vanilla";
+
+const sharedTypeToJS = (sharedType: Y.Map<any> | Y.Array<any> | Y.Text) => {
+  if (sharedType instanceof Y.Map) return yMapToObject(sharedType);
+  if (sharedType instanceof Y.Array) return yArrayToArray(sharedType);
+  if (sharedType instanceof Y.Text) return yTextToString(sharedType);
+  return (sharedType as any).toJSON();
+};
 
 /**
  * Diffs sharedType and newState to create a list of changes for transforming
@@ -17,10 +24,10 @@ export const patchSharedType = (
   sharedType: Y.Map<any> | Y.Array<any> | Y.Text,
 
   newState: any,
-  options?: { atomicKeys?: string[] }
+  options?: { atomicKeys?: string[], subdocKeys?: string[] }
 ): void =>
 {
-  const changes = getChanges(sharedType.toJSON(), newState);
+  const changes = getChanges(sharedTypeToJS(sharedType), newState);
 
   changes.forEach(([ type, property, value ]) =>
   {
@@ -32,7 +39,17 @@ export const patchSharedType = (
       {
         if (sharedType instanceof Y.Map)
         {
-          if (typeof value === "string")
+          if (options?.subdocKeys?.includes(property as string) && value !== null)
+          {
+            const subdoc = new Y.Doc();
+            if (typeof value === "object")
+            {
+              const rootMap = subdoc.getMap("root");
+              populateYMap(rootMap, value, options);
+            }
+            sharedType.set(property as string, subdoc);
+          }
+          else if (typeof value === "string")
           {
             if (options?.atomicKeys?.includes(property as string))
               sharedType.set(property as string, value);
@@ -90,16 +107,22 @@ export const patchSharedType = (
     case ChangeType.PENDING:
       if (sharedType instanceof Y.Map)
       {
+        let child = sharedType.get(property as string);
+        if (child instanceof Y.Doc) child = child.getMap("root");
+
         patchSharedType(
-          sharedType.get(property as string),
+          child,
           newState[property as string],
           options
         );
       }
       else if (sharedType instanceof Y.Array)
       {
+        let child = sharedType.get(property as number);
+        if (child instanceof Y.Doc) child = child.getMap("root");
+
         patchSharedType(
-          sharedType.get(property as number),
+          child,
           newState[property as number],
           options
         );

@@ -4,6 +4,7 @@ import {
 } from "zustand";
 import * as Y from "yjs";
 import { patchSharedType, patchStore, } from "./patching";
+import { yMapToObject } from "./mapping";
 
 type Yjs = <
   T,
@@ -32,6 +33,14 @@ export interface YjsOptions
    * bypassing the Y.Text conversion.
    */
   atomicKeys?: string[];
+
+  /**
+   * Keys that should be treated as subdocuments (Y.Doc).
+   *
+   * Values at these keys will be stored as Y.Doc instances. This is useful for
+   * lazy loading large branches of the state tree or for managing access control.
+   */
+  subdocKeys?: string[];
 
   /**
    * A callback that is called when the store is first loaded from the Yjs document.
@@ -145,7 +154,23 @@ const yjs: YjsImpl = <S>(
           ...api,
           "setState": originalSetState,
         },
-        map.toJSON()
+        yMapToObject(map)
+      );
+    });
+
+    /*
+     * Listen for subdocument loading events.
+     * When a subdocument is loaded, we need to update the store to reflect
+     * the new data.
+     */
+    doc.on("subdocs", () =>
+    {
+      patchStore(
+        {
+          ...api,
+          "setState": originalSetState,
+        },
+        yMapToObject(map)
       );
     });
 
