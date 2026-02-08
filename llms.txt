@@ -159,6 +159,39 @@ const useTodoList = create(
 
 ```
 
+### 4\. Atomic Updates (Avoiding Race Conditions)
+
+When dealing with concurrent updates, standard "spread and replace" patterns can lead to race conditions where updates from other peers are overwritten. To solve this, the middleware exposes an atomic API via `set.yjs`.
+
+This API allows you to perform operations directly on the Yjs types, which are then merged correctly by Yjs.
+
+```
+const useStore = create(
+  yjs(
+    (set) => ({
+      items: {},
+      list: [],
+
+      // Atomic Map Update
+      addItem: (id, item) => set.yjs('items').set(id, item),
+
+      // Atomic Map Delete
+      removeItem: (id) => set.yjs('items').delete(id),
+
+      // Atomic Array Push
+      addToList: (item) => set.yjs('list').push([item]),
+
+      // Atomic Array Insert
+      insertIntoList: (index, item) => set.yjs('list').insert(index, [item]),
+
+      // Atomic Array Delete
+      removeFromList: (index) => set.yjs('list').delete(index)
+    }),
+    { doc: ydoc, name: 'shared' }
+  )
+);
+```
+
 Best Practices & Gotchas
 ------------------------
 
@@ -194,8 +227,23 @@ import { StateCreator } from 'zustand';
 import * as Y from 'yjs';
 
 declare module 'zustand-middleware-yjs' {
+  export interface YjsProxy {
+    set(key: string | number, value: any): void;
+    delete(key: string | number): void;
+    push(items: any[]): void;
+    insert(index: number, items: any[]): void;
+  }
+
+  export type YjsSet<T> = StoreApi<T>["setState"] & {
+    yjs: (path?: string) => YjsProxy;
+  };
+
   export function yjs<T>(
-    config: StateCreator<T>,
+    config: (
+      set: YjsSet<T>,
+      get: StoreApi<T>["getState"],
+      api: StoreApi<T>
+    ) => T,
     options: { doc: Y.Doc; name?: string }
   ): StateCreator<T>;
 }

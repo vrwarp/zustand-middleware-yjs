@@ -74,6 +74,40 @@ render(
 );
 ```
 
+## Atomic Updates (Avoiding Race Conditions)
+
+Standard Zustand updates like `set({ items: { ...state.items, new: 1 } })` can cause data loss in distributed environments because they technically "replace" the entire object, which might overwrite concurrent updates from peers.
+
+To solve this, use the atomic `set.yjs` API to perform operations directly on Yjs types:
+
+```tsx
+const useStore = create(
+  yjs(
+    ydoc,
+    "shared",
+    (set) => ({
+      items: {},
+      list: [],
+
+      // Atomic Set: Only updates 'key', preserves other concurrent updates
+      addItem: (key, value) => set.yjs("items").set(key, value),
+
+      // Atomic Delete
+      removeItem: (key) => set.yjs("items").delete(key),
+
+      // Atomic Array Push
+      addToList: (item) => set.yjs("list").push([item]),
+
+      // Atomic Array Insert at index
+      insertIntoList: (index, item) => set.yjs("list").insert(index, [item]),
+
+      // Atomic Array Delete at index
+      removeFromList: (index) => set.yjs("list").delete(index)
+    })
+  )
+);
+```
+
 ## Caveats
 
  1. The Yjs awareness protocol is not supported. At the moment, it is unclear
