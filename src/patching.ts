@@ -17,7 +17,7 @@ export const patchSharedType = (
   sharedType: Y.Map<any> | Y.Array<any> | Y.Text,
 
   newState: any,
-  options?: { atomicKeys?: string[] }
+  options?: { atomicKeys?: string[], previousState?: any }
 ): void =>
 {
   const changes = getChanges(sharedType.toJSON(), newState);
@@ -71,7 +71,25 @@ export const patchSharedType = (
 
     case ChangeType.DELETE:
       if (sharedType instanceof Y.Map)
+      {
+        const prev = options?.previousState;
+
+        // Ignorance Check:
+        // If the property exists in the shared type but is missing in the new state,
+        // we check if it existed in the previous state.
+        // If it did NOT exist in the previous state, the user (local state) was "ignorant"
+        // of it, so its absence in the new state is not an intentional delete.
+        if (
+          prev &&
+          typeof prev === "object" &&
+          Object.prototype.hasOwnProperty.call(prev, property as string) === false
+        )
+        {
+          return;
+        }
+
         sharedType.delete(property as string);
+      }
 
       else if (sharedType instanceof Y.Array)
       {
@@ -90,18 +108,33 @@ export const patchSharedType = (
     case ChangeType.PENDING:
       if (sharedType instanceof Y.Map)
       {
+        let childPreviousState;
+
+        if (
+          options?.previousState &&
+          typeof options.previousState === "object"
+        )
+          childPreviousState = options.previousState[property as string];
+
         patchSharedType(
           sharedType.get(property as string),
           newState[property as string],
-          options
+          { ...options, "previousState": childPreviousState, }
         );
       }
       else if (sharedType instanceof Y.Array)
       {
+        let childPreviousState;
+
+        if (
+          Array.isArray(options?.previousState)
+        )
+          childPreviousState = options.previousState[property as number];
+
         patchSharedType(
           sharedType.get(property as number),
           newState[property as number],
-          options
+          { ...options, "previousState": childPreviousState, }
         );
       }
       break;

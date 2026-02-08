@@ -3,7 +3,7 @@ import * as Y from "yjs";
 import yjs from ".";
 
 describe("Vulnerability Reproduction: Safe-Update Race Condition", () => {
-  it("Clobbers concurrent updates when setState is derived from stale state", () => {
+  it("Preserves concurrent updates when setState is derived from stale state", () => {
     // 1. Setup: A store managing a record of items.
     type Store = {
       items: Record<string, number>;
@@ -65,15 +65,11 @@ describe("Vulnerability Reproduction: Safe-Update Race Condition", () => {
     const finalMap = (map.get("items") as any).toJSON();
 
     // EXPECTATION: B should be preserved (atomic merge).
-    // REALITY: B is deleted (clobbered).
 
     expect(finalMap).toHaveProperty("A");
     expect(finalMap).toHaveProperty("C");
 
-    // This assertion passes if the vulnerability exists (B is lost):
-    expect(finalMap).not.toHaveProperty("B");
-
-    console.log("Final Map State:", finalMap);
-    // Output: { A: 1, C: 3 } -> B was lost.
+    // This assertion passes if the vulnerability is FIXED (B is preserved):
+    expect(finalMap).toHaveProperty("B");
   });
 });

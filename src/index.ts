@@ -85,6 +85,9 @@ const yjs: YjsImpl = <S>(
     // Initialize the loading state.
     let loaded = false;
 
+    // Track the last local state to detect ignorant updates.
+    let previousState = get();
+
     if (map.size > 0)
     {
       loaded = true;
@@ -104,7 +107,8 @@ const yjs: YjsImpl = <S>(
       {
         set(partial as any, replace as any);
         doc.transact(() =>
-          patchSharedType(map, get(), options), api);
+          patchSharedType(map, get(), { ...options, previousState }), api);
+        previousState = get();
       },
       get,
       api
@@ -115,7 +119,8 @@ const yjs: YjsImpl = <S>(
     {
       originalSetState(partial as any, replace as any);
       doc.transact(() =>
-        patchSharedType(map, api.getState(), options), api);
+        patchSharedType(map, api.getState(), { ...options, previousState }), api);
+      previousState = api.getState();
     };
 
     /*
