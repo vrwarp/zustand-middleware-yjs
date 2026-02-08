@@ -17,7 +17,7 @@ export const patchSharedType = (
   sharedType: Y.Map<any> | Y.Array<any> | Y.Text,
 
   newState: any,
-  options?: { atomicKeys?: string[] }
+  options?: { atomicKeys?: string[], previousState?: any }
 ): void =>
 {
   const changes = getChanges(sharedType.toJSON(), newState);
@@ -70,6 +70,13 @@ export const patchSharedType = (
       break;
 
     case ChangeType.DELETE:
+      {
+        const prev = options?.previousState;
+
+        if (prev && typeof prev === "object" && !(property in prev))
+          return;
+      }
+
       if (sharedType instanceof Y.Map)
         sharedType.delete(property as string);
 
@@ -88,21 +95,28 @@ export const patchSharedType = (
       break;
 
     case ChangeType.PENDING:
-      if (sharedType instanceof Y.Map)
       {
-        patchSharedType(
-          sharedType.get(property as string),
-          newState[property as string],
-          options
-        );
-      }
-      else if (sharedType instanceof Y.Array)
-      {
-        patchSharedType(
-          sharedType.get(property as number),
-          newState[property as number],
-          options
-        );
+        let childPreviousState;
+
+        if (options?.previousState && typeof options.previousState === "object")
+          childPreviousState = options.previousState[property as string];
+
+        if (sharedType instanceof Y.Map)
+        {
+          patchSharedType(
+            sharedType.get(property as string),
+            newState[property as string],
+            { ...options, previousState: childPreviousState }
+          );
+        }
+        else if (sharedType instanceof Y.Array)
+        {
+          patchSharedType(
+            sharedType.get(property as number),
+            newState[property as number],
+            { ...options, previousState: childPreviousState }
+          );
+        }
       }
       break;
 

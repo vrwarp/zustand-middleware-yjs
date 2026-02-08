@@ -102,9 +102,10 @@ const yjs: YjsImpl = <S>(
        */
       (partial, replace) =>
       {
+        const previousState = get();
         set(partial as any, replace as any);
         doc.transact(() =>
-          patchSharedType(map, get(), options), api);
+          patchSharedType(map, get(), { ...options, previousState }), api);
       },
       get,
       api
@@ -113,9 +114,10 @@ const yjs: YjsImpl = <S>(
     const originalSetState = api.setState;
     api.setState = (partial, replace) =>
     {
+      const previousState = api.getState();
       originalSetState(partial as any, replace as any);
       doc.transact(() =>
-        patchSharedType(map, api.getState(), options), api);
+        patchSharedType(map, api.getState(), { ...options, previousState }), api);
     };
 
     /*

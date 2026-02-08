@@ -1,17 +1,10 @@
-/**
- * This test reproduces the "Safe-Update Race Condition" where concurrent remote updates
- * could be lost if a local update is based on a stale state snapshot.
- *
- * It verifies that the "Ignorance Check" (Three-Way Merge) strategy correctly prevents
- * the deletion of remote keys that were not present in the local stale snapshot.
- */
 import { createStore as createVanilla } from "zustand/vanilla";
 import * as Y from "yjs";
 import yjs from ".";
 
-describe("Vulnerability Reproduction: Safe-Update Race Condition", () => {
-  it("Preserves concurrent updates when setState is derived from stale state", () => {
-    // 1. Setup: A store managing a record of items.
+describe("Concurrency: Three-Way Merge Strategy", () => {
+  it("preserves remote keys when local update is ignorant of them (Three-Way Merge)", () => {
+    // 1. Setup
     type Store = {
       items: Record<string, number>;
       addItem: (key: string, value: number) => void;
@@ -34,35 +27,34 @@ describe("Vulnerability Reproduction: Safe-Update Race Condition", () => {
       )
     );
 
-    // 2. Initial State: Both Map and Store have { A: 1 }
+    // 2. Initial State: { A: 1 }
     api.getState().addItem("A", 1);
     expect((map.get("items") as any).toJSON()).toEqual({ "A": 1 });
 
-    // 3. Simulate the "Race":
-    // The user (or a React component) reads the *current* state to prepare an update.
-    // This state captures { A: 1 }.
+    // 3. Capture Stale Snapshot
     const staleStateSnapshot = api.getState();
 
-    // 4. Concurrent Update:
-    // While the user is preparing their update, a remote change arrives via Yjs.
+    // 4. Remote Update: Insert { B: 2 }
     doc.transact(() => {
         const itemsMap = map.get("items") as Y.Map<any>;
         itemsMap.set("B", 2);
     });
 
-    // Verify the store updated
+    // Verify remote update landed in store
     expect(api.getState().items).toEqual({ "A": 1, "B": 2 });
 
-    // 5. Commit Stale Update:
-    // The user/component finally commits their update, adding "C", based on stale snapshot.
+    // 5. Local Update using Stale Snapshot (Ignorant of B)
+    // We mock api.getState() to return the stale snapshot for the first call (previousState capture)
+    // and the real state for subsequent calls (newState capture).
+    // This simulates the scenario where the store update lagged behind Yjs,
+    // or allows us to provide the "User's View" as previousState.
 
-    // We mock api.getState() to simulate the lag/race where the update logic receives
-    // the stale state as "previousState", or to represent the user's view.
     const realGetState = api.getState;
     const getStateSpy = jest.spyOn(api, 'getState')
       .mockReturnValueOnce(staleStateSnapshot) // Call 1: previousState capture
       .mockImplementation(() => realGetState()); // Call 2: newState capture
 
+    // User sets state to { A: 1, C: 3 } (derived from snapshot that missed B)
     api.setState({
       items: {
         ...staleStateSnapshot.items,
@@ -72,13 +64,12 @@ describe("Vulnerability Reproduction: Safe-Update Race Condition", () => {
 
     getStateSpy.mockRestore();
 
-    // 6. Verification:
+    // 6. Verification
     const finalMap = (map.get("items") as any).toJSON();
 
     expect(finalMap).toHaveProperty("A");
     expect(finalMap).toHaveProperty("C");
-
-    // EXPECTATION: B should be preserved because it wasn't in the stale snapshot
+    // EXPECTATION: B should be preserved (atomic merge).
     expect(finalMap).toHaveProperty("B");
   });
 });
