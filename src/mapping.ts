@@ -178,3 +178,26 @@ export const yTextToString = (ytext: Y.Text): string =>
 
 export const stringToYText = (string: string): Y.Text =>
   new Y.Text(string);
+
+export const convertValue = (
+  key: string,
+  value: any,
+  options?: { atomicKeys?: string[] }
+): any =>
+{
+  if (Array.isArray(value))
+    return arrayToYArray(value, options);
+
+  else if (typeof value === "object" && value !== null)
+    return objectToYMap(value, options);
+
+  else if (typeof value === "string")
+  {
+    if (options?.atomicKeys?.includes(key))
+      return value;
+    else
+      return stringToYText(value);
+  }
+
+  return value;
+};

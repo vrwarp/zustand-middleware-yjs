@@ -1,7 +1,7 @@
 import * as Y from "yjs";
 import { ChangeType, Change, } from "./types";
 import { getChanges, } from "./diff";
-import { arrayToYArray, objectToYMap, stringToYText, } from "./mapping";
+import { convertValue } from "./mapping";
 import { StoreApi, } from "zustand/vanilla";
 
 /**
@@ -32,19 +32,10 @@ export const patchSharedType = (
       {
         if (sharedType instanceof Y.Map)
         {
-          if (typeof value === "string")
-          {
-            if (options?.atomicKeys?.includes(property as string))
-              sharedType.set(property as string, value);
-            else
-              sharedType.set(property as string, stringToYText(value));
-          }
-          else if (Array.isArray(value))
-            sharedType.set(property as string, arrayToYArray(value, options));
-          else if (typeof value === "object" && value !== null)
-            sharedType.set(property as string, objectToYMap(value, options));
-          else
-            sharedType.set(property as string, value);
+          sharedType.set(
+            property as string,
+            convertValue(property as string, value, options)
+          );
         }
 
         else if (sharedType instanceof Y.Array)
@@ -54,14 +45,7 @@ export const patchSharedType = (
           if (type === ChangeType.UPDATE)
             sharedType.delete(index);
 
-          if (typeof value === "string")
-            sharedType.insert(index, [ stringToYText(value) ]);
-          else if (Array.isArray(value))
-            sharedType.insert(index, [ arrayToYArray(value, options) ]);
-          else if (typeof value === "object" && value !== null)
-            sharedType.insert(index, [ objectToYMap(value, options) ]);
-          else
-            sharedType.insert(index, [ value ]);
+          sharedType.insert(index, [ convertValue("", value, options) ]);
         }
 
         else if (sharedType instanceof Y.Text)

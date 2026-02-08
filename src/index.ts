@@ -1,9 +1,11 @@
 import {
   StateCreator,
   StoreMutatorIdentifier,
+  StoreApi,
 } from "zustand";
 import * as Y from "yjs";
 import { patchSharedType, patchStore, } from "./patching";
+import { convertValue } from "./mapping";
 
 type Yjs = <
   T,
@@ -12,7 +14,11 @@ type Yjs = <
 >(
   doc: Y.Doc,
   name: string,
-  f: StateCreator<T, Mps, Mcs>,
+  f: (
+    set: YjsSet<T>,
+    get: StoreApi<T>["getState"],
+    api: StoreApi<T>
+  ) => T,
   options?: YjsOptions
 ) => StateCreator<T, Mps, Mcs>;
 
@@ -39,10 +45,25 @@ export interface YjsOptions
   onLoaded?: () => void;
 }
 
+export interface YjsProxy {
+  set(key: string | number, value: any): void;
+  delete(key: string | number): void;
+  push(items: any[]): void;
+  insert(index: number, items: any[]): void;
+}
+
+export type YjsSet<T> = StoreApi<T>["setState"] & {
+  yjs: (path?: string) => YjsProxy;
+};
+
 type YjsImpl = <T>(
   doc: Y.Doc,
   name: string,
-  config: StateCreator<T, [], []>,
+  config: (
+    set: YjsSet<T>,
+    get: StoreApi<T>["getState"],
+    api: StoreApi<T>
+  ) => T,
   options?: YjsOptions
 ) => StateCreator<T, [], []>;
 
@@ -72,7 +93,11 @@ type YjsImpl = <T>(
 const yjs: YjsImpl = <S>(
   doc: Y.Doc,
   name: string,
-  config: StateCreator<S>,
+  config: (
+    set: YjsSet<S>,
+    get: StoreApi<S>["getState"],
+    api: StoreApi<S>
+  ) => S,
   options?: YjsOptions
 ): StateCreator<S> =>
 {
@@ -95,17 +120,112 @@ const yjs: YjsImpl = <S>(
      * Capture the initial state so that we can initialize the Yjs store to the
      * same values as the initial values of the Zustand store.
      */
-    const initialState = config(
-      /*
-       * Create a new set function that defers to the original and then passes
-       * the new state to patchSharedType.
-       */
-      (partial, replace) =>
+    const setWrapper: any = (partial: any, replace: any) =>
+    {
+      set(partial as any, replace as any);
+      doc.transact(() =>
+        patchSharedType(map, get(), options), api);
+    };
+
+    setWrapper.yjs = (path: string = "") =>
+    {
+      const getSharedType = (
+        root: Y.Map<any> | Y.Array<any>,
+        path: string
+      ): Y.AbstractType<any> | undefined =>
       {
-        set(partial as any, replace as any);
-        doc.transact(() =>
-          patchSharedType(map, get(), options), api);
-      },
+        if (!path) return root;
+        const parts = path.split(".");
+        let current: any = root;
+        for (const part of parts)
+        {
+          if (current instanceof Y.Map)
+          {
+            current = current.get(part);
+          }
+          else if (current instanceof Y.Array)
+          {
+            current = current.get(parseInt(part, 10));
+          }
+          else
+          {
+            return undefined;
+          }
+        }
+        return current instanceof Y.AbstractType ? current : undefined;
+      };
+
+      const target = getSharedType(map, path);
+
+      if (!target)
+      {
+        throw new Error(`Path ${path} does not resolve to a Yjs shared type`);
+      }
+
+      return {
+        "set": (key: string | number, value: any) =>
+        {
+          doc.transact(() =>
+          {
+            if (target instanceof Y.Map)
+            {
+              target.set(
+                String(key),
+                convertValue(String(key), value, options)
+              );
+            }
+            else if (target instanceof Y.Array)
+            {
+              const index = Number(key);
+              if (index < target.length)
+              {
+                target.delete(index, 1);
+              }
+              target.insert(index, [ convertValue("", value, options) ]);
+            }
+          }, api);
+        },
+        "delete": (key: string | number) =>
+        {
+          doc.transact(() =>
+          {
+            if (target instanceof Y.Map)
+            {
+              target.delete(String(key));
+            }
+            else if (target instanceof Y.Array)
+            {
+              target.delete(Number(key), 1);
+            }
+          }, api);
+        },
+        "push": (items: any[]) =>
+        {
+          doc.transact(() =>
+          {
+            if (target instanceof Y.Array)
+            {
+              target.push(items.map((item) =>
+                convertValue("", item, options)));
+            }
+          }, api);
+        },
+        "insert": (index: number, items: any[]) =>
+        {
+          doc.transact(() =>
+          {
+            if (target instanceof Y.Array)
+            {
+              target.insert(index, items.map((item) =>
+                convertValue("", item, options)));
+            }
+          }, api);
+        },
+      };
+    };
+
+    const initialState = config(
+      setWrapper,
       get,
       api
     );
