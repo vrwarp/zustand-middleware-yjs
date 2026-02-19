@@ -19,8 +19,7 @@ type Yjs = <
 /**
  * Options for the Yjs middleware.
  */
-export interface YjsOptions
-{
+export interface YjsOptions {
   /**
    * specific keys that should be treated as atomic strings.
    *
@@ -74,19 +73,16 @@ const yjs: YjsImpl = <S>(
   name: string,
   config: StateCreator<S>,
   options?: YjsOptions
-): StateCreator<S> =>
-{
+): StateCreator<S> => {
   // The root Y.Map that the store is written and read from.
   const map: Y.Map<any> = doc.getMap(name);
 
   // Augment the store.
-  return (set, get, api) =>
-  {
+  return (set, get, api) => {
     // Initialize the loading state.
     let loaded = false;
 
-    if (map.size > 0)
-    {
+    if (map.size > 0) {
       loaded = true;
       options?.onLoaded?.();
     }
@@ -100,8 +96,7 @@ const yjs: YjsImpl = <S>(
        * Create a new set function that defers to the original and then passes
        * the new state to patchSharedType.
        */
-      (partial, replace) =>
-      {
+      (partial, replace) => {
         const previousState = get();
         set(partial as any, replace as any);
         doc.transact(() =>
@@ -112,8 +107,7 @@ const yjs: YjsImpl = <S>(
     );
 
     const originalSetState = api.setState;
-    api.setState = (partial, replace) =>
-    {
+    api.setState = (partial, replace) => {
       const previousState = api.getState();
       originalSetState(partial as any, replace as any);
       doc.transact(() =>
@@ -133,15 +127,18 @@ const yjs: YjsImpl = <S>(
      * Whenever the Yjs store changes, we perform a set operation on the local
      * Zustand store. We avoid using the Yjs enabled set to prevent unnecessary
      * ping-pong of updates.
+     *
+     * Inbound Microtask Batching: multiple Yjs transactions arriving within the
+     * same event-loop tick are coalesced into a single patchStore call.
+     * This reduces complexity from O(T×N) to O(1×N) per tick, preventing
+     * main-thread blocking during bulk remote updates.
      */
-    map.observeDeep((_, transaction) =>
-    {
-      if (!loaded && transaction.origin !== api)
-      {
-        loaded = true;
-        options?.onLoaded?.();
-      }
 
+    // Flag to prevent scheduling more than one sync per event-loop tick.
+    let isUpdatePending = false;
+
+    const processBatch = () => {
+      isUpdatePending = false;
       patchStore(
         {
           ...api,
@@ -149,6 +146,26 @@ const yjs: YjsImpl = <S>(
         },
         map.toJSON()
       );
+    };
+
+    map.observeDeep((_, transaction) => {
+      // 1. Initial Load Handling (unchanged behaviour).
+      if (!loaded && transaction.origin !== api) {
+        loaded = true;
+        options?.onLoaded?.();
+      }
+
+      // 2. Local Echo Suppression.
+      // If we originated this transaction, the Zustand store is already
+      // up-to-date. Skip the round-trip entirely.
+      if (transaction.origin === api) return;
+
+      // 3. Microtask Coalescing.
+      // Schedule at most one synchronisation per event-loop tick.
+      if (!isUpdatePending) {
+        isUpdatePending = true;
+        queueMicrotask(processBatch);
+      }
     });
 
     // Return the initial state to create or the next middleware.

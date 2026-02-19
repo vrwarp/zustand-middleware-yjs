@@ -10,7 +10,7 @@ import * as Y from "yjs";
 import yjs from ".";
 
 describe("Vulnerability Reproduction: Safe-Update Race Condition", () => {
-  it("Preserves concurrent updates when setState is derived from stale state", () => {
+  it("Preserves concurrent updates when setState is derived from stale state", async () => {
     // 1. Setup: A store managing a record of items.
     type Store = {
       items: Record<string, number>;
@@ -46,9 +46,12 @@ describe("Vulnerability Reproduction: Safe-Update Race Condition", () => {
     // 4. Concurrent Update:
     // While the user is preparing their update, a remote change arrives via Yjs.
     doc.transact(() => {
-        const itemsMap = map.get("items") as Y.Map<any>;
-        itemsMap.set("B", 2);
+      const itemsMap = map.get("items") as Y.Map<any>;
+      itemsMap.set("B", 2);
     });
+
+    // Flush microtask queue so the deferred patchStore from the remote update fires.
+    await Promise.resolve();
 
     // Verify the store updated
     expect(api.getState().items).toEqual({ "A": 1, "B": 2 });

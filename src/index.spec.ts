@@ -12,27 +12,25 @@ import { WebsocketProvider, } from "y-websocket";
 
 import yjs from ".";
 
-describe("Yjs middleware", () =>
-{
-  it("Creates a useState function.", () =>
-  {
+describe("Yjs middleware", () => {
+  it("Creates a useState function.", () => {
     type Store =
-    {
-      count: number,
-      increment: () => void,
-    };
+      {
+        count: number,
+        increment: () => void,
+      };
 
     const { getState, } =
       createVanilla<Store>(yjs(
         new Y.Doc(),
         "hello",
         (set) =>
-          ({
-            "count": 0,
-            "increment": () =>
-              set((state) =>
-                ({ "count": state.count + 1, })),
-          })
+        ({
+          "count": 0,
+          "increment": () =>
+            set((state) =>
+              ({ "count": state.count + 1, })),
+        })
       ));
 
     expect(getState().count).toBe(0);
@@ -42,13 +40,12 @@ describe("Yjs middleware", () =>
     expect(getState().count).toBe(1);
   });
 
-  it("Correctly updates Yjs when setState is called", () =>
-  {
+  it("Correctly updates Yjs when setState is called", () => {
     type Store =
-    {
-      count: number,
-      increment: () => void,
-    };
+      {
+        count: number,
+        increment: () => void,
+      };
 
     const doc = new Y.Doc();
     const map = doc.getMap("hello");
@@ -58,12 +55,12 @@ describe("Yjs middleware", () =>
         doc,
         "hello",
         (set) =>
-          ({
-            "count": 0,
-            "increment": () =>
-              set((state) =>
-                ({ "count": state.count + 1, })),
-          })
+        ({
+          "count": 0,
+          "increment": () =>
+            set((state) =>
+              ({ "count": state.count + 1, })),
+        })
       ));
 
     expect(map.get("count")).toBeUndefined();
@@ -73,23 +70,20 @@ describe("Yjs middleware", () =>
     expect(map.get("count")).toBe(1);
   });
 
-  it("Receives changes from peers.", () =>
-  {
+  it("Receives changes from peers.", async () => {
     type Store =
-    {
-      count: number,
-      increment: () => void,
-    };
+      {
+        count: number,
+        increment: () => void,
+      };
 
     const doc1 = new Y.Doc();
     const doc2 = new Y.Doc();
 
-    doc1.on("update", (update: any) =>
-    {
+    doc1.on("update", (update: any) => {
       Y.applyUpdate(doc2, update);
     });
-    doc2.on("update", (update: any) =>
-    {
+    doc2.on("update", (update: any) => {
       Y.applyUpdate(doc1, update);
     });
 
@@ -100,12 +94,12 @@ describe("Yjs middleware", () =>
         doc1,
         storeName,
         (set) =>
-          ({
-            "count": 0,
-            "increment": () =>
-              set((state) =>
-                ({ "count": state.count + 1, })),
-          })
+        ({
+          "count": 0,
+          "increment": () =>
+            set((state) =>
+              ({ "count": state.count + 1, })),
+        })
       ));
 
     const { "getState": getStateB, } =
@@ -113,12 +107,12 @@ describe("Yjs middleware", () =>
         doc2,
         storeName,
         (set) =>
-          ({
-            "count": 0,
-            "increment": () =>
-              set((state) =>
-                ({ "count": state.count + 1, })),
-          })
+        ({
+          "count": 0,
+          "increment": () =>
+            set((state) =>
+              ({ "count": state.count + 1, })),
+        })
       ));
 
     expect(getStateA().count).toBe(0);
@@ -127,28 +121,27 @@ describe("Yjs middleware", () =>
     getStateA().increment();
 
     expect(getStateA().count).toBe(1);
+    // Flush the microtask queue so the remote peer's batched patchStore fires.
+    await Promise.resolve();
     expect(getStateB().count).toBe(1);
   });
 
-  it("Performs nested updates.", () =>
-  {
+  it("Performs nested updates.", async () => {
     type Store =
-    {
-      person: {
-        age: number,
-      },
-      getOlder: () => void,
-    };
+      {
+        person: {
+          age: number,
+        },
+        getOlder: () => void,
+      };
 
     const doc1 = new Y.Doc();
     const doc2 = new Y.Doc();
 
-    doc1.on("update", (update: any) =>
-    {
+    doc1.on("update", (update: any) => {
       Y.applyUpdate(doc2, update);
     });
-    doc2.on("update", (update: any) =>
-    {
+    doc2.on("update", (update: any) => {
       Y.applyUpdate(doc1, update);
     });
 
@@ -159,17 +152,17 @@ describe("Yjs middleware", () =>
         doc1,
         storeName,
         (set) =>
-          ({
-            "person": {
-              "age": 0,
-              "name": "Joe",
-            },
-            "getOlder": () =>
-              set((state) =>
-                ({
-                  "person": { ...state.person, "age": state.person.age + 1, },
-                })),
-          })
+        ({
+          "person": {
+            "age": 0,
+            "name": "Joe",
+          },
+          "getOlder": () =>
+            set((state) =>
+            ({
+              "person": { ...state.person, "age": state.person.age + 1, },
+            })),
+        })
       ));
 
     const { "getState": getStateB, } =
@@ -177,17 +170,17 @@ describe("Yjs middleware", () =>
         doc2,
         storeName,
         (set) =>
-          ({
-            "person": {
-              "age": 0,
-              "name": "Joe",
-            },
-            "getOlder": () =>
-              set((state) =>
-                ({
-                  "person": { ...state.person, "age": state.person.age + 1, },
-                })),
-          })
+        ({
+          "person": {
+            "age": 0,
+            "name": "Joe",
+          },
+          "getOlder": () =>
+            set((state) =>
+            ({
+              "person": { ...state.person, "age": state.person.age + 1, },
+            })),
+        })
       ));
 
     expect(getStateA().person.age).toBe(0);
@@ -196,31 +189,29 @@ describe("Yjs middleware", () =>
     getStateA().getOlder();
 
     expect(getStateA().person.age).toBe(1);
+    await Promise.resolve();
     expect(getStateB().person.age).toBe(1);
   });
 
-  it("Performs deep nested updates.", () =>
-  {
+  it("Performs deep nested updates.", async () => {
     type Store =
-    {
-      owner: {
-        person: {
-          age: number,
-          name: string,
+      {
+        owner: {
+          person: {
+            age: number,
+            name: string,
+          },
         },
-      },
-      getOlder: () => void,
-    };
+        getOlder: () => void,
+      };
 
     const doc1 = new Y.Doc();
     const doc2 = new Y.Doc();
 
-    doc1.on("update", (update: any) =>
-    {
+    doc1.on("update", (update: any) => {
       Y.applyUpdate(doc2, update);
     });
-    doc2.on("update", (update: any) =>
-    {
+    doc2.on("update", (update: any) => {
       Y.applyUpdate(doc1, update);
     });
 
@@ -231,50 +222,50 @@ describe("Yjs middleware", () =>
         doc1,
         storeName,
         (set) =>
-          ({
-            "owner": {
-              "person": {
-                "age": 0,
-                "name": "Joe",
-              },
+        ({
+          "owner": {
+            "person": {
+              "age": 0,
+              "name": "Joe",
             },
-            "getOlder": () =>
-              set((state) =>
-                ({
-                  "owner": {
-                    ...state.owner,
-                    "person": {
-                      ...state.owner.person,
-                      "age": state.owner.person.age + 1,
-                    },
-                  },
-                })),
-          })
+          },
+          "getOlder": () =>
+            set((state) =>
+            ({
+              "owner": {
+                ...state.owner,
+                "person": {
+                  ...state.owner.person,
+                  "age": state.owner.person.age + 1,
+                },
+              },
+            })),
+        })
       ));
     const { "getState": getStateB, } =
       createVanilla<Store>(yjs(
         doc1,
         storeName,
         (set) =>
-          ({
-            "owner": {
-              "person": {
-                "age": 0,
-                "name": "Joe",
-              },
+        ({
+          "owner": {
+            "person": {
+              "age": 0,
+              "name": "Joe",
             },
-            "getOlder": () =>
-              set((state) =>
-                ({
-                  "owner": {
-                    ...state.owner,
-                    "person": {
-                      ...state.owner.person,
-                      "age": state.owner.person.age + 1,
-                    },
-                  },
-                })),
-          })
+          },
+          "getOlder": () =>
+            set((state) =>
+            ({
+              "owner": {
+                ...state.owner,
+                "person": {
+                  ...state.owner.person,
+                  "age": state.owner.person.age + 1,
+                },
+              },
+            })),
+        })
       ));
 
     expect(getStateA().owner.person.age).toBe(0);
@@ -283,28 +274,26 @@ describe("Yjs middleware", () =>
     getStateA().getOlder();
 
     expect(getStateA().owner.person.age).toBe(1);
+    await Promise.resolve();
     expect(getStateB().owner.person.age).toBe(1);
   });
 
-  it("Updates arrays in objects.", () =>
-  {
+  it("Updates arrays in objects.", async () => {
     type Store =
-    {
-      room: {
-        users: string[]
-      },
-      join: (user: string) => void,
-    };
+      {
+        room: {
+          users: string[]
+        },
+        join: (user: string) => void,
+      };
 
     const doc1 = new Y.Doc();
     const doc2 = new Y.Doc();
 
-    doc1.on("update", (update: any) =>
-    {
+    doc1.on("update", (update: any) => {
       Y.applyUpdate(doc2, update);
     });
-    doc2.on("update", (update: any) =>
-    {
+    doc2.on("update", (update: any) => {
       Y.applyUpdate(doc1, update);
     });
 
@@ -315,26 +304,26 @@ describe("Yjs middleware", () =>
         doc1,
         storeName,
         (set) =>
-          ({
-            "room": {
-              "users": [
-                "amy",
-                "sam",
-                "harold"
-              ],
-            },
-            "join": (user) =>
-              set((state) =>
-                ({
-                  "room": {
-                    ...state.room,
-                    "users": [
-                      ...state.room.users,
-                      user
-                    ],
-                  },
-                })),
-          })
+        ({
+          "room": {
+            "users": [
+              "amy",
+              "sam",
+              "harold"
+            ],
+          },
+          "join": (user) =>
+            set((state) =>
+            ({
+              "room": {
+                ...state.room,
+                "users": [
+                  ...state.room.users,
+                  user
+                ],
+              },
+            })),
+        })
       ));
 
     const { "getState": getStateB, } =
@@ -342,54 +331,52 @@ describe("Yjs middleware", () =>
         doc1,
         storeName,
         (set) =>
-          ({
-            "room": {
-              "users": [
-                "amy",
-                "sam",
-                "harold"
-              ],
-            },
-            "join": (user) =>
-              set((state) =>
-                ({
-                  "room": {
-                    ...state.room,
-                    "users": [
-                      ...state.room.users,
-                      user
-                    ],
-                  },
-                })),
-          })
+        ({
+          "room": {
+            "users": [
+              "amy",
+              "sam",
+              "harold"
+            ],
+          },
+          "join": (user) =>
+            set((state) =>
+            ({
+              "room": {
+                ...state.room,
+                "users": [
+                  ...state.room.users,
+                  user
+                ],
+              },
+            })),
+        })
       ));
 
-    expect(getStateA().room.users).toEqual([ "amy", "sam", "harold" ]);
-    expect(getStateB().room.users).toEqual([ "amy", "sam", "harold" ]);
+    expect(getStateA().room.users).toEqual(["amy", "sam", "harold"]);
+    expect(getStateB().room.users).toEqual(["amy", "sam", "harold"]);
 
     getStateA().join("bob");
 
-    expect(getStateA().room.users).toEqual([ "amy", "sam", "harold", "bob" ]);
-    expect(getStateB().room.users).toEqual([ "amy", "sam", "harold", "bob" ]);
+    expect(getStateA().room.users).toEqual(["amy", "sam", "harold", "bob"]);
+    await Promise.resolve();
+    expect(getStateB().room.users).toEqual(["amy", "sam", "harold", "bob"]);
   });
 
-  it("Updates objects in arrays.", () =>
-  {
+  it("Updates objects in arrays.", () => {
     type Store =
-    {
-      users: { name: string, status: "online" | "offline" }[],
-      setStatus: (userName: string, status: "online" | "offline") => void,
-    };
+      {
+        users: { name: string, status: "online" | "offline" }[],
+        setStatus: (userName: string, status: "online" | "offline") => void,
+      };
 
     const doc1 = new Y.Doc();
     const doc2 = new Y.Doc();
 
-    doc1.on("update", (update: any) =>
-    {
+    doc1.on("update", (update: any) => {
       Y.applyUpdate(doc2, update);
     });
-    doc2.on("update", (update: any) =>
-    {
+    doc2.on("update", (update: any) => {
       Y.applyUpdate(doc1, update);
     });
 
@@ -400,33 +387,32 @@ describe("Yjs middleware", () =>
         doc1,
         storeName,
         (set) =>
-          ({
-            "users": [
-              {
-                "name": "alice",
-                "status": "offline",
-              },
-              {
-                "name": "bob",
-                "status": "offline",
-              }
-            ],
-            "setStatus": (userName, status) =>
+        ({
+          "users": [
             {
-              set((state) =>
-                ({
-                  ...state,
-                  "users": [
-                    ...state.users.filter(({ name, }) =>
-                      name !== userName),
-                    {
-                      "name": userName,
-                      "status": status,
-                    }
-                  ],
-                }));
+              "name": "alice",
+              "status": "offline",
             },
-          })
+            {
+              "name": "bob",
+              "status": "offline",
+            }
+          ],
+          "setStatus": (userName, status) => {
+            set((state) =>
+            ({
+              ...state,
+              "users": [
+                ...state.users.filter(({ name, }) =>
+                  name !== userName),
+                {
+                  "name": userName,
+                  "status": status,
+                }
+              ],
+            }));
+          },
+        })
       ));
 
     const { "getState": getStateB, } =
@@ -434,33 +420,32 @@ describe("Yjs middleware", () =>
         doc1,
         storeName,
         (set) =>
-          ({
-            "users": [
-              {
-                "name": "alice",
-                "status": "offline",
-              },
-              {
-                "name": "bob",
-                "status": "offline",
-              }
-            ],
-            "setStatus": (userName, status) =>
+        ({
+          "users": [
             {
-              set((state) =>
-                ({
-                  ...state,
-                  "users": [
-                    ...state.users.filter(({ name, }) =>
-                      name !== userName),
-                    {
-                      "name": userName,
-                      "status": status,
-                    }
-                  ],
-                }));
+              "name": "alice",
+              "status": "offline",
             },
-          })
+            {
+              "name": "bob",
+              "status": "offline",
+            }
+          ],
+          "setStatus": (userName, status) => {
+            set((state) =>
+            ({
+              ...state,
+              "users": [
+                ...state.users.filter(({ name, }) =>
+                  name !== userName),
+                {
+                  "name": userName,
+                  "status": status,
+                }
+              ],
+            }));
+          },
+        })
       ));
 
     expect(getStateA().users).toEqual([
@@ -484,15 +469,13 @@ describe("Yjs middleware", () =>
     ]);
   });
 
-  describe("When adding consecutive entries into arrays", () =>
-  {
-    it("Does not throw when inserting multiple scalars into arrays.", () =>
-    {
+  describe("When adding consecutive entries into arrays", () => {
+    it("Does not throw when inserting multiple scalars into arrays.", () => {
       type Store =
-      {
-        numbers: number[],
-        addNumber: (n: number) => void,
-      };
+        {
+          numbers: number[],
+          addNumber: (n: number) => void,
+        };
 
       const doc = new Y.Doc();
 
@@ -501,35 +484,33 @@ describe("Yjs middleware", () =>
           doc,
           "hello",
           (set) =>
-            ({
-              "numbers": [],
-              "addNumber": (n) =>
-                set((state) =>
-                  ({
-                    "numbers": [
-                      ...state.numbers,
-                      n
-                    ],
-                  })),
-            })
+          ({
+            "numbers": [],
+            "addNumber": (n) =>
+              set((state) =>
+              ({
+                "numbers": [
+                  ...state.numbers,
+                  n
+                ],
+              })),
+          })
         ));
 
       expect(api.getState().numbers).toEqual([]);
 
-      expect(() =>
-      {
+      expect(() => {
         api.getState().addNumber(0);
         api.getState().addNumber(1);
       }).not.toThrow();
     });
 
-    it("Does not throw when inserting multiple arrays into arrays.", () =>
-    {
+    it("Does not throw when inserting multiple arrays into arrays.", () => {
       type Store =
-      {
-        arrays: Array<any>[],
-        addArray: (array: any[]) => void,
-      };
+        {
+          arrays: Array<any>[],
+          addArray: (array: any[]) => void,
+        };
 
       const doc = new Y.Doc();
 
@@ -538,35 +519,33 @@ describe("Yjs middleware", () =>
           doc,
           "hello",
           (set) =>
-            ({
-              "arrays": [],
-              "addArray": (array) =>
-                set((state) =>
-                  ({
-                    "arrays": [
-                      ...state.arrays,
-                      array
-                    ],
-                  })),
-            })
+          ({
+            "arrays": [],
+            "addArray": (array) =>
+              set((state) =>
+              ({
+                "arrays": [
+                  ...state.arrays,
+                  array
+                ],
+              })),
+          })
         ));
 
       expect(api.getState().arrays).toEqual([]);
 
-      expect(() =>
-      {
-        api.getState().addArray([ 1, 2, 3, 4 ]);
-        api.getState().addArray([ "foo", "bar", "baz" ]);
+      expect(() => {
+        api.getState().addArray([1, 2, 3, 4]);
+        api.getState().addArray(["foo", "bar", "baz"]);
       }).not.toThrow();
     });
 
-    it("Does not throw when inserting multiple maps into arrays.", () =>
-    {
+    it("Does not throw when inserting multiple maps into arrays.", () => {
       type Store =
-      {
-        users: { name: string, status: "online" | "offline" }[],
-        addUser: (name: string, status: "online" | "offline") => void,
-      };
+        {
+          users: { name: string, status: "online" | "offline" }[],
+          addUser: (name: string, status: "online" | "offline") => void,
+        };
 
       const doc = new Y.Doc();
 
@@ -575,26 +554,25 @@ describe("Yjs middleware", () =>
           doc,
           "hello",
           (set) =>
-            ({
-              "users": <{ name: string, status: "online" | "offline" }[]>[],
-              "addUser": (name, status) =>
-                set((state) =>
-                  ({
-                    "users": [
-                      ...state.users,
-                      {
-                        "name": name,
-                        "status": status,
-                      }
-                    ],
-                  })),
-            })
+          ({
+            "users": <{ name: string, status: "online" | "offline" }[]>[],
+            "addUser": (name, status) =>
+              set((state) =>
+              ({
+                "users": [
+                  ...state.users,
+                  {
+                    "name": name,
+                    "status": status,
+                  }
+                ],
+              })),
+          })
         ));
 
       expect(api.getState().users).toEqual([]);
 
-      expect(() =>
-      {
+      expect(() => {
         api.getState().addUser("alice", "offline");
         api.getState().addUser("bob", "offline");
       }).not.toThrow();
@@ -602,19 +580,17 @@ describe("Yjs middleware", () =>
   });
 
   // See issue #42
-  describe("When unsetting contents of an object", () =>
-  {
-    it("Does not crash on subsequent update", () =>
-    {
+  describe("When unsetting contents of an object", () => {
+    it("Does not crash on subsequent update", () => {
       type Store =
-      {
-        count: number,
-        columns: Record<string, any>[],
+        {
+          count: number,
+          columns: Record<string, any>[],
 
-        increment: () => void,
-        setColumns: (object: Record<string, any>) => void,
-        removeColumns: () => void,
-      };
+          increment: () => void,
+          setColumns: (object: Record<string, any>) => void,
+          removeColumns: () => void,
+        };
 
       const doc = new Y.Doc();
 
@@ -623,28 +599,27 @@ describe("Yjs middleware", () =>
           doc,
           "hello",
           (set) =>
-            ({
-              "count": 0,
-              "columns": [],
-              "increment": () =>
-                set((state) =>
-                  ({
-                    ...state,
-                    "count": state.count + 1,
-                  })),
-              "setColumns": (object: Record<string, any>) =>
-                set({
-                  "columns": [ { "dataObject": [ object ], } ],
-                }),
-              "removeColumns": () =>
-                set({
-                  "columns": [ { "dataObject": undefined, } ],
-                }),
-            })
+          ({
+            "count": 0,
+            "columns": [],
+            "increment": () =>
+              set((state) =>
+              ({
+                ...state,
+                "count": state.count + 1,
+              })),
+            "setColumns": (object: Record<string, any>) =>
+              set({
+                "columns": [{ "dataObject": [object], }],
+              }),
+            "removeColumns": () =>
+              set({
+                "columns": [{ "dataObject": undefined, }],
+              }),
+          })
         ));
 
-      expect(() =>
-      {
+      expect(() => {
         api.getState().setColumns({ "foo": "bar", });
         api.getState().removeColumns();
         api.getState().increment();
@@ -653,15 +628,13 @@ describe("Yjs middleware", () =>
   });
 
   // See issue #49
-  describe("When nesting strings into arrays and objects", () =>
-  {
-    it("Does not crash", () =>
-    {
+  describe("When nesting strings into arrays and objects", () => {
+    it("Does not crash", () => {
       type Store =
-      {
-        foo: { bar: string }
-        updateFoo: (s: string) => void
-      };
+        {
+          foo: { bar: string }
+          updateFoo: (s: string) => void
+        };
 
       const doc = new Y.Doc();
 
@@ -669,18 +642,17 @@ describe("Yjs middleware", () =>
         doc,
         "hello",
         (set) =>
-          ({
-            "foo": {
-              "bar": "baz",
-            },
-            "updateFoo": (s: string) =>
-              set((state) =>
-                ({ ...state, "foo": { "bar": s, }, })),
-          })
+        ({
+          "foo": {
+            "bar": "baz",
+          },
+          "updateFoo": (s: string) =>
+            set((state) =>
+              ({ ...state, "foo": { "bar": s, }, })),
+        })
       ));
 
-      expect(() =>
-      {
+      expect(() => {
         api.getState().updateFoo("bingo");
         api.getState().updateFoo("bango"); // Always on subsequent update
       }).not.toThrow();
@@ -688,17 +660,14 @@ describe("Yjs middleware", () =>
   });
 });
 
-describe("Yjs middleware with network provider", () =>
-{
+describe("Yjs middleware with network provider", () => {
 
   let server: ChildProcess;
   const port = 1234;
 
   const waitForProviderToConnect = async (provider: WebsocketProvider) =>
-    new Promise<void>((resolve) =>
-    {
-      (function waitForFoo()
-      {
+    new Promise<void>((resolve) => {
+      (function waitForFoo() {
         if (provider.wsconnected) return resolve();
         setTimeout(waitForFoo, 30);
       })();
@@ -706,11 +675,10 @@ describe("Yjs middleware with network provider", () =>
 
 
   // Startup y-websocket demo server for test.
-  beforeEach(async () =>
-  {
+  beforeEach(async () => {
     server = spawn(
       "node",
-      [ "./node_modules/y-websocket/bin/server.js" ],
+      ["./node_modules/y-websocket/bin/server.js"],
       {
         "cwd": path.resolve(__dirname, ".."),
         "windowsHide": true,
@@ -723,10 +691,8 @@ describe("Yjs middleware with network provider", () =>
     );
 
     // Wait for the server to be ready before running the tests.
-    await new Promise<void>((resolve) =>
-    {
-      server.stdout?.on("readable", () =>
-      {
+    await new Promise<void>((resolve) => {
+      server.stdout?.on("readable", () => {
         server.stdout?.removeAllListeners();
         resolve();
       });
@@ -734,22 +700,20 @@ describe("Yjs middleware with network provider", () =>
   });
 
   // Kill y-websocket demo server after test has completed.
-  afterEach(() =>
-  {
+  afterEach(() => {
     server.kill();
   });
 
-  it("Does not reset state on second join.", async () =>
-  {
+  it("Does not reset state on second join.", async () => {
     const address = `ws://localhost:${port}`;
     const roomName = "room";
     const mapName = "shared";
 
     type State =
-    {
-      count: number,
-      increment: () => void,
-    };
+      {
+        count: number,
+        increment: () => void,
+      };
 
     const doc1 = new Y.Doc();
     const provider1 = new WebsocketProvider(
@@ -764,12 +728,12 @@ describe("Yjs middleware with network provider", () =>
       doc1,
       mapName,
       (set) =>
-        ({
-          "count": 0,
-          "increment": () =>
-            set((state) =>
-              ({ "count": state.count + 1, })),
-        })
+      ({
+        "count": 0,
+        "increment": () =>
+          set((state) =>
+            ({ "count": state.count + 1, })),
+      })
     ));
 
     await waitForProviderToConnect(provider1);
@@ -791,22 +755,27 @@ describe("Yjs middleware with network provider", () =>
       doc2,
       mapName,
       (set) =>
-        ({
-          "count": 0,
-          "increment": () =>
-            set((state) =>
-              ({ "count": state.count + 1, })),
-        })
+      ({
+        "count": 0,
+        "increment": () =>
+          set((state) =>
+            ({ "count": state.count + 1, })),
+      })
     ));
 
     await waitForProviderToConnect(provider2);
 
+    // Flush microtask queue so store2's batched patchStore runs.
+    await Promise.resolve();
     expect(store1.getState().count).toBe(1);
     expect(store2.getState().count).toBe(1);
 
     store1.getState().increment();
 
     expect(store1.getState().count).toBe(2);
+    // Network delivery is async; wait for the update to arrive and batch to flush.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await Promise.resolve();
     expect(store2.getState().count).toBe(2);
 
     provider1.awareness.destroy();
@@ -816,19 +785,17 @@ describe("Yjs middleware with network provider", () =>
   });
 });
 
-describe("Yjs middleware in React", () =>
-{
+describe("Yjs middleware in React", () => {
   /**
    * See Issue 37.
    */
-  it("Functions in nested objects are not converted to plain objects.", () =>
-  {
+  it("Functions in nested objects are not converted to plain objects.", () => {
     type Store =
-    {
-      count: number,
-      increment: () => void,
-      someOtherData: any,
-    };
+      {
+        count: number,
+        increment: () => void,
+        someOtherData: any,
+      };
 
     const doc = new Y.Doc();
 
@@ -837,28 +804,27 @@ describe("Yjs middleware in React", () =>
         doc,
         "hello",
         (set) =>
-          ({
-            "count": 0,
-            "increment": () =>
-              set((state) =>
-                ({ "count": state.count + 1, })),
-            "someOtherData": {
-              "foo": () =>
-                "bar",
-            },
-          })
+        ({
+          "count": 0,
+          "increment": () =>
+            set((state) =>
+              ({ "count": state.count + 1, })),
+          "someOtherData": {
+            "foo": () =>
+              "bar",
+          },
+        })
       ));
 
     const { result, } = renderHook(() =>
       useStore(useShallow(({ count, increment, someOtherData, }) =>
-        ({
-          "count": count,
-          "increment": increment,
-          "someOtherData": someOtherData,
-        }))));
+      ({
+        "count": count,
+        "increment": increment,
+        "someOtherData": someOtherData,
+      }))));
 
-    act(() =>
-    {
+    act(() => {
       result.current.increment();
     });
 
@@ -868,24 +834,21 @@ describe("Yjs middleware in React", () =>
   /**
    * See Issue 41.
    */
-  it("Zustand is properly notified of updates from remote peer.", () =>
-  {
+  it("Zustand is properly notified of updates from remote peer.", async () => {
     type Store =
-    {
-      count: number,
-      increment: () => void,
-    };
+      {
+        count: number,
+        increment: () => void,
+      };
 
     const doc1 = new Y.Doc();
     const doc2 = new Y.Doc();
 
-    doc1.on("update", (update: any) =>
-    {
+    doc1.on("update", (update: any) => {
       Y.applyUpdate(doc2, update);
     });
 
-    doc2.on("update", (update: any) =>
-    {
+    doc2.on("update", (update: any) => {
       Y.applyUpdate(doc1, update);
     });
 
@@ -894,12 +857,12 @@ describe("Yjs middleware in React", () =>
         doc1,
         "hello",
         (set) =>
-          ({
-            "count": 0,
-            "increment": () =>
-              set((state) =>
-                ({ "count": state.count + 1, })),
-          })
+        ({
+          "count": 0,
+          "increment": () =>
+            set((state) =>
+              ({ "count": state.count + 1, })),
+        })
       ));
 
 
@@ -908,50 +871,47 @@ describe("Yjs middleware in React", () =>
         doc2,
         "hello",
         (set) =>
-          ({
-            "count": 0,
-            "increment": () =>
-              set((state) =>
-                ({ "count": state.count + 1, })),
-          })
+        ({
+          "count": 0,
+          "increment": () =>
+            set((state) =>
+              ({ "count": state.count + 1, })),
+        })
       ));
 
     const { "result": result1, } = renderHook(() =>
       useStore1(useShallow(({ count, increment, }) =>
-        ({
-          "count": count,
-          "increment": increment,
-        }))));
+      ({
+        "count": count,
+        "increment": increment,
+      }))));
 
     const { "result": result2, } = renderHook(() =>
       useStore2(useShallow(({ count, increment, }) =>
-        ({
-          "count": count,
-          "increment": increment,
-        }))));
+      ({
+        "count": count,
+        "increment": increment,
+      }))));
 
-    act(() =>
-    {
+    await act(async () => {
       result1.current.increment();
+      // Flush the microtask queue so the remote peer's batched patchStore fires.
+      await Promise.resolve();
     });
 
     expect(doc2.getMap("hello").get("count")).toBe(1); // Sanity check
     expect(result2.current.count).toBe(1); // Actual issue
   });
 
-  describe("When using the onLoaded callback", () =>
-  {
-    it("Calls onLoaded when the store is first loaded from the Yjs document.", async () =>
-    {
+  describe("When using the onLoaded callback", () => {
+    it("Calls onLoaded when the store is first loaded from the Yjs document.", async () => {
       const doc1 = new Y.Doc();
       const doc2 = new Y.Doc();
 
-      doc1.on("update", (update: any) =>
-      {
+      doc1.on("update", (update: any) => {
         Y.applyUpdate(doc2, update);
       });
-      doc2.on("update", (update: any) =>
-      {
+      doc2.on("update", (update: any) => {
         Y.applyUpdate(doc1, update);
       });
 
@@ -965,28 +925,30 @@ describe("Yjs middleware in React", () =>
           doc1,
           storeName,
           (set) =>
-            ({
-              "count": 0,
-              "increment": () =>
-                set((state) =>
-                  ({ "count": state.count + 1, })),
-            })
-        ));
-
-      /*
-       * Create the second store, which should receive the initial state from the first store.
-       * onLoaded should be called when the first update is received.
-       */
-      createVanilla<Store>(yjs(
-        doc2,
-        storeName,
-        (set) =>
           ({
             "count": 0,
             "increment": () =>
               set((state) =>
                 ({ "count": state.count + 1, })),
-          }),
+          })
+        ));
+
+      /*
+       * Create the second store, which should receive the initial state from the first store.
+       * onLoaded should be called synchronously inside the observer (before the early return /
+       * before the microtask is scheduled), so the callback fires within the same tick as the
+       * Yjs update — no microtask flush is needed here.
+       */
+      createVanilla<Store>(yjs(
+        doc2,
+        storeName,
+        (set) =>
+        ({
+          "count": 0,
+          "increment": () =>
+            set((state) =>
+              ({ "count": state.count + 1, })),
+        }),
         {
           "onLoaded": onLoaded,
         }
@@ -997,11 +959,11 @@ describe("Yjs middleware in React", () =>
       // Trigger an update from doc1.
       getStateA().increment();
 
+      // onLoaded fires synchronously in the observer (before the batching guard).
       expect(onLoaded).toHaveBeenCalled();
     });
 
-    it("Calls onLoaded immediately if the store is already populated.", () =>
-    {
+    it("Calls onLoaded immediately if the store is already populated.", () => {
       const doc = new Y.Doc();
       const map = doc.getMap("store");
       map.set("count", 1);

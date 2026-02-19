@@ -3,7 +3,7 @@ import * as Y from "yjs";
 import yjs from ".";
 
 describe("Concurrency: Three-Way Merge Strategy", () => {
-  it("preserves remote keys when local update is ignorant of them (Three-Way Merge)", () => {
+  it("preserves remote keys when local update is ignorant of them (Three-Way Merge)", async () => {
     // 1. Setup
     type Store = {
       items: Record<string, number>;
@@ -36,9 +36,12 @@ describe("Concurrency: Three-Way Merge Strategy", () => {
 
     // 4. Remote Update: Insert { B: 2 }
     doc.transact(() => {
-        const itemsMap = map.get("items") as Y.Map<any>;
-        itemsMap.set("B", 2);
+      const itemsMap = map.get("items") as Y.Map<any>;
+      itemsMap.set("B", 2);
     });
+
+    // Flush microtask so the remote update lands in the Zustand store.
+    await Promise.resolve();
 
     // Verify remote update landed in store
     expect(api.getState().items).toEqual({ "A": 1, "B": 2 });
