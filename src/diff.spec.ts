@@ -250,7 +250,7 @@ describe("getChanges", () => {
         [1, 2, 3],
         [
           [ChangeType.INSERT, 1, 2],
-          [ChangeType.DELETE, 2, undefined]
+          [ChangeType.DELETE, 3, undefined]
         ]
       ],
       [

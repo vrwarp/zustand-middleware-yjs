@@ -68,79 +68,88 @@ const getArrayChanges = (a: Array<any>, b: Array<any>): Change[] => {
   let finalIndices = 0;
   let bOffset = 0;
 
+  const LOOKAHEAD_WINDOW = 10;
+
   for (let index = 0; index < a.length; index++) {
     const value = a[index];
-
     const bIndex = index + bOffset;
 
-    if (b[bIndex] === undefined)
-      changeList.push([ChangeType.DELETE, index, undefined]);
+    // Boundary check
+    if (bIndex >= b.length) {
+      changeList.push([ChangeType.DELETE, bIndex, undefined]);
+      continue;
+    }
 
-    else if (isDiffable(value)
-      && isDiffable(b[bIndex])
-      && isSameType(value, b[bIndex])) {
+    let matchFound = false;
+
+    // --- WINDOWED LOOKAHEAD ---
+    for (let k = 0; k <= LOOKAHEAD_WINDOW; k++) {
+      // 1. Check for INSERTION (Drift in B)
+      // Look ahead in B: Does A[index] match B[bIndex + k]?
+      if (bIndex + k < b.length) {
+        const bValue = b[bIndex + k];
+        const isStrictMatch = value === bValue;
+        const isDeepMatch = !isStrictMatch && isDiffable(value) && isDiffable(bValue) && isSameType(value, bValue)
+          ? getChanges(value, bValue).length === 0
+          : false;
+
+        if (isStrictMatch || isDeepMatch) {
+          if (k > 0) {
+            // Found a match k steps away in B.
+            // This means the previous k items in B were insertions.
+            for (let insertIdx = 0; insertIdx < k; insertIdx++) {
+              changeList.push([ChangeType.INSERT, bIndex + insertIdx, b[bIndex + insertIdx]]);
+            }
+            finalIndices += (k + 1);
+            bOffset += k;
+          } else {
+            finalIndices++; // Standard match (k=0)
+          }
+          matchFound = true;
+          break;
+        }
+      }
+
+      // 2. Check for DELETION (Drift in A)
+      // Look ahead in A: Does A[index + k] match B[bIndex]?
+      if (k > 0 && index + k < a.length) {
+        const nextA = a[index + k];
+        const isStrictMatch = nextA === b[bIndex];
+        const isDeepMatch = !isStrictMatch && isDiffable(nextA) && isDiffable(b[bIndex]) && isSameType(nextA, b[bIndex])
+          ? getChanges(nextA, b[bIndex]).length === 0
+          : false;
+
+        if (isStrictMatch || isDeepMatch) {
+          // Found a match k steps away in A.
+          // This means the items A[index]...A[index+k-1] were deleted.
+          for (let deleteIdx = 0; deleteIdx < k; deleteIdx++) {
+            // We emit deletion at 'bIndex' repeatedly because as items are deleted,
+            // the subsequent items shift into 'bIndex'.
+            changeList.push([ChangeType.DELETE, bIndex, undefined]);
+          }
+
+          index += (k - 1); // Skip k-1 items (loop increments 1)
+          bOffset -= k;
+          matchFound = true;
+          break;
+        }
+      }
+    }
+
+    if (matchFound) continue;
+
+    // Fallback: UPDATE / PENDING
+    // If no match found within window, assume mutation.
+    if (isDiffable(value) && isDiffable(b[bIndex]) && isSameType(value, b[bIndex])) {
       const currentDiff = getChanges(value, b[bIndex]);
-
-      // Insertion Lookahead (Deep): A[i] matches B[bIndex+1] => B[bIndex] was inserted
-      const nextDiff = typeof b[bIndex + 1] !== "undefined"
-        && isDiffable(b[bIndex + 1])
-        && isSameType(value, b[bIndex + 1])
-        ? getChanges(value, b[bIndex + 1])
-        : null;
-
-      // Deletion Lookahead (Deep): A[i+1] matches B[bIndex] => A[i] was deleted
-      const deletionDiff = typeof a[index + 1] !== "undefined"
-        && isDiffable(a[index + 1])
-        && isSameType(a[index + 1], b[bIndex])
-        ? getChanges(a[index + 1], b[bIndex])
-        : null;
-
-      if (nextDiff !== null
-        && nextDiff.length === 0
-        && currentDiff.length !== 0) {
-        changeList.push([ChangeType.INSERT, index, b[bIndex]]);
-        finalIndices += 2;
-        bOffset++;
+      if (currentDiff.length !== 0) {
+        changeList.push([ChangeType.PENDING, bIndex, currentDiff]);
       }
-
-      else if (deletionDiff !== null
-        && deletionDiff.length === 0
-        && currentDiff.length !== 0) {
-        changeList.push([ChangeType.DELETE, index, undefined]);
-        bOffset--;
-      }
-
-      else if (currentDiff.length !== 0) {
-        changeList.push([ChangeType.PENDING, index, currentDiff]);
-        finalIndices++;
-      }
-
-      else
-        finalIndices++;
-    }
-
-    else if (value !== b[bIndex] && value === b[bIndex + 1]) {
-      changeList.push([ChangeType.INSERT, bIndex, b[bIndex]]);
-      finalIndices += 2;
-      bOffset++;
-    }
-
-    // Deletion Lookahead (Primitive): A[i+1] matches B[bIndex] => A[i] was deleted
-    else if (
-      value !== b[bIndex]
-      && typeof a[index + 1] !== "undefined"
-      && a[index + 1] === b[bIndex]) {
-      changeList.push([ChangeType.DELETE, index, undefined]);
-      bOffset--;
-    }
-
-    else if (value !== b[bIndex] && value !== b[bIndex + 1]) {
+      finalIndices++;
+    } else {
       changeList.push([ChangeType.UPDATE, bIndex, b[bIndex]]);
       finalIndices++;
     }
-
-    else
-      finalIndices++;
   }
 
   if (finalIndices < b.length) {
