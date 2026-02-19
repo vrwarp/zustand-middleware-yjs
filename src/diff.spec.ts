@@ -1,20 +1,17 @@
 import { ChangeType, } from "./types";
 import { getChanges, } from "./diff";
 
-describe("getChanges", () =>
-{
-  describe("When given objects", () =>
-  {
+describe("getChanges", () => {
+  describe("When given objects", () => {
     it.each([
-      [ {} ],
-      [ { "foo": 1, } ],
-      [ { "foo": null, } ], // See GitHub Issue #32
-      [ { "foo": undefined, } ], // See GitHub Issue #32
-      [ { "foo": { "bar": 1, }, } ]
+      [{}],
+      [{ "foo": 1, }],
+      [{ "foo": null, }], // See GitHub Issue #32
+      [{ "foo": undefined, }], // See GitHub Issue #32
+      [{ "foo": { "bar": 1, }, }]
     ])(
       "Returns an empty list for two identical objects.",
-      (a) =>
-      {
+      (a) => {
         expect(getChanges(a, a)).toStrictEqual([]);
       }
     );
@@ -24,43 +21,43 @@ describe("getChanges", () =>
         {},
         { "foo": 1, },
         [
-          [ ChangeType.INSERT, "foo", 1 ]
+          [ChangeType.INSERT, "foo", 1]
         ]
       ],
       [
         { "foo": 1, },
         {},
         [
-          [ ChangeType.DELETE, "foo", undefined ]
+          [ChangeType.DELETE, "foo", undefined]
         ]
       ],
       [
         { "foo": 1, },
         { "foo": 2, },
         [
-          [ ChangeType.UPDATE, "foo", 2 ]
+          [ChangeType.UPDATE, "foo", 2]
         ]
       ],
       [
         { "foo": 1, },
         { "bar": 1, },
         [
-          [ ChangeType.DELETE, "foo", undefined ],
-          [ ChangeType.INSERT, "bar", 1 ]
+          [ChangeType.DELETE, "foo", undefined],
+          [ChangeType.INSERT, "bar", 1]
         ]
       ],
       [
         { "foo": 1, "bar": 3, },
         { "foo": 1, "bar": 2, },
         [
-          [ ChangeType.UPDATE, "bar", 2 ]
+          [ChangeType.UPDATE, "bar", 2]
         ]
       ],
       [
         { "foo": 1, },
         { "foo": "a", },
         [
-          [ ChangeType.UPDATE, "foo", "a" ]
+          [ChangeType.UPDATE, "foo", "a"]
         ]
       ],
       [
@@ -71,7 +68,7 @@ describe("getChanges", () =>
             ChangeType.PENDING,
             "foo",
             [
-              [ ChangeType.DELETE, 0, undefined ]
+              [ChangeType.DELETE, 0, undefined]
             ]
           ]
         ]
@@ -84,8 +81,8 @@ describe("getChanges", () =>
             ChangeType.PENDING,
             "foo",
             [
-              [ ChangeType.DELETE, 0, undefined ],
-              [ ChangeType.INSERT, 0, "b" ]
+              [ChangeType.DELETE, 0, undefined],
+              [ChangeType.INSERT, 0, "b"]
             ]
           ]
         ]
@@ -98,74 +95,73 @@ describe("getChanges", () =>
             ChangeType.PENDING,
             "foo",
             [
-              [ ChangeType.DELETE, 0, undefined ],
-              [ ChangeType.INSERT, 1, "c" ]
+              [ChangeType.DELETE, 0, undefined],
+              [ChangeType.INSERT, 1, "c"]
             ]
           ]
         ]
       ],
       [
-        { "foo": [ 1 ], },
-        { "foo": [ 2 ], },
+        { "foo": [1], },
+        { "foo": [2], },
         [
           [
             ChangeType.PENDING,
             "foo",
             [
-              [ ChangeType.UPDATE, 0, 2 ]
+              [ChangeType.UPDATE, 0, 2]
             ]
           ]
         ]
       ],
       [
-        { "foo": [ 1, 2 ], },
-        { "foo": [ 2, 2 ], },
+        { "foo": [1, 2], },
+        { "foo": [2, 2], },
         [
           [
             ChangeType.PENDING,
             "foo",
             [
-              [ ChangeType.UPDATE, 0, 2 ]
+              [ChangeType.DELETE, 0, undefined],
+              [ChangeType.INSERT, 1, 2]
             ]
           ]
         ]
       ],
       [
-        { "foo": [ 1, 2, 2 ], },
-        { "foo": [ 1, 2, 3 ], },
+        { "foo": [1, 2, 2], },
+        { "foo": [1, 2, 3], },
         [
           [
             ChangeType.PENDING,
             "foo",
             [
-              [ ChangeType.UPDATE, 2, 3 ]
+              [ChangeType.UPDATE, 2, 3]
             ]
           ]
         ]
       ],
       [
-        { "foo": [ 1, 2, 2 ], },
-        { "foo": [ 1, 2 ], },
+        { "foo": [1, 2, 2], },
+        { "foo": [1, 2], },
         [
           [
             ChangeType.PENDING,
             "foo",
             [
-              [ ChangeType.DELETE, 2, undefined ]
+              [ChangeType.DELETE, 2, undefined]
             ]
           ]
         ]
       ]
     ])(
       "Returns a change list for objects",
-      (a, b, changes) =>
-      {
+      (a, b, changes) => {
         expect(getChanges(a, b)).toStrictEqual(changes);
       }
     );
 
-    it("Ignores properties whose values are functions", () =>
-    {
+    it("Ignores properties whose values are functions", () => {
       const a = {
         "foo": () =>
           1,
@@ -177,44 +173,42 @@ describe("getChanges", () =>
     });
   });
 
-  describe("When given arrays", () =>
-  {
+  describe("When given arrays", () => {
     it.each([
-      [ [ 1, 2, 3 ] ],
-      [ [ null, null, null ] ], // See GitHub Issue #32
-      [ [ { "foo": 1, } ] ]
-    ])("Returns an empty list for identical arrays", (a) =>
-    {
+      [[1, 2, 3]],
+      [[null, null, null]], // See GitHub Issue #32
+      [[{ "foo": 1, }]]
+    ])("Returns an empty list for identical arrays", (a) => {
       expect(getChanges(a, a)).toStrictEqual([]);
     });
 
     it.each([
       [
-        [ 1, 2, 3 ],
-        [ 1, 2 ],
+        [1, 2, 3],
+        [1, 2],
         [
-          [ ChangeType.DELETE, 2, undefined ]
+          [ChangeType.DELETE, 2, undefined]
         ]
       ],
       [
-        [ 1, 2 ],
-        [ 1, 2, 3 ],
+        [1, 2],
+        [1, 2, 3],
         [
-          [ ChangeType.INSERT, 2, 3 ]
+          [ChangeType.INSERT, 2, 3]
         ]
       ],
       [
-        [ 1, 3 ],
-        [ 1, 2, 3 ],
+        [1, 3],
+        [1, 2, 3],
         [
-          [ ChangeType.INSERT, 1, 2 ]
+          [ChangeType.INSERT, 1, 2]
         ]
       ],
       [
-        [ 0, 2, 3 ],
-        [ 1, 2, 3 ],
+        [0, 2, 3],
+        [1, 2, 3],
         [
-          [ ChangeType.UPDATE, 0, 1 ]
+          [ChangeType.UPDATE, 0, 1]
         ]
       ],
       /*
@@ -252,62 +246,62 @@ describe("getChanges", () =>
        * 'correct' change list.
        */
       [
-        [ 1, 3, 3 ],
-        [ 1, 2, 3 ],
+        [1, 3, 3],
+        [1, 2, 3],
         [
-          [ ChangeType.INSERT, 1, 2 ],
-          [ ChangeType.DELETE, 2, undefined ]
+          [ChangeType.INSERT, 1, 2],
+          [ChangeType.DELETE, 2, undefined]
         ]
       ],
       [
-        [ { "foo": 1, } ],
-        [ { "foo": 1, }, { "bar": 2, } ],
-        [ [ ChangeType.INSERT, 1, { "bar": 2, } ] ]
+        [{ "foo": 1, }],
+        [{ "foo": 1, }, { "bar": 2, }],
+        [[ChangeType.INSERT, 1, { "bar": 2, }]]
       ],
       [
-        [ { "foo": 1, } ],
-        [ { "foo": 2, }, { "foo": 1, } ],
+        [{ "foo": 1, }],
+        [{ "foo": 2, }, { "foo": 1, }],
         [
-          [ ChangeType.INSERT, 0, { "foo": 2, } ]
+          [ChangeType.INSERT, 0, { "foo": 2, }]
         ]
       ],
       [
-        [ { "foo": 1, }, { "foo": 2, } ],
-        [ { "foo": 0, }, { "foo": 1, }, { "foo": 2, } ],
+        [{ "foo": 1, }, { "foo": 2, }],
+        [{ "foo": 0, }, { "foo": 1, }, { "foo": 2, }],
         [
-          [ ChangeType.INSERT, 0, { "foo": 0, } ]
+          [ChangeType.INSERT, 0, { "foo": 0, }]
         ]
       ],
       [
-        [ { "foo": 1, }, { "foo": 2, } ],
-        [ { "foo": 1, }, { "foo": 1, }, { "foo": 2, } ],
+        [{ "foo": 1, }, { "foo": 2, }],
+        [{ "foo": 1, }, { "foo": 1, }, { "foo": 2, }],
         [
-          [ ChangeType.INSERT, 1, { "foo": 1, } ]
+          [ChangeType.INSERT, 1, { "foo": 1, }]
         ]
       ],
       [
-        [ { "foo": 1, }, { "foo": 2, }, { "foo": 3, } ],
-        [ { "foo": 1, }, { "foo": 2, }, { "foo": 2, }, { "foo": 3, } ],
+        [{ "foo": 1, }, { "foo": 2, }, { "foo": 3, }],
+        [{ "foo": 1, }, { "foo": 2, }, { "foo": 2, }, { "foo": 3, }],
         [
-          [ ChangeType.INSERT, 2, { "foo": 2, } ]
+          [ChangeType.INSERT, 2, { "foo": 2, }]
         ]
       ],
       [
-        [ { "foo": 1, } ],
-        [ { "foo": 0, } ],
+        [{ "foo": 1, }],
+        [{ "foo": 0, }],
         [
           [
             ChangeType.PENDING,
             0,
             [
-              [ ChangeType.UPDATE, "foo", 0 ]
+              [ChangeType.UPDATE, "foo", 0]
             ]
           ]
         ]
       ],
       [
-        [ { "foo": 1, } ],
-        [ ],
+        [{ "foo": 1, }],
+        [],
         [
           [
             ChangeType.DELETE,
@@ -317,8 +311,8 @@ describe("getChanges", () =>
         ]
       ],
       [
-        [ { "foo": 1, } ],
-        [ {} ],
+        [{ "foo": 1, }],
+        [{}],
         [
           [
             ChangeType.PENDING,
@@ -334,87 +328,131 @@ describe("getChanges", () =>
         ]
       ],
       [
-        [ "a" ],
-        [ "" ],
+        ["a"],
+        [""],
         [
           [
             ChangeType.PENDING,
             0,
             [
-              [ ChangeType.DELETE, 0, undefined ]
+              [ChangeType.DELETE, 0, undefined]
             ]
           ]
         ]
       ],
       [
-        [ "ab" ],
-        [ "bc" ],
+        ["ab"],
+        ["bc"],
         [
           [
             ChangeType.PENDING,
             0,
             [
-              [ ChangeType.DELETE, 0, undefined ],
-              [ ChangeType.INSERT, 1, "c" ]
+              [ChangeType.DELETE, 0, undefined],
+              [ChangeType.INSERT, 1, "c"]
             ]
           ]
         ]
       ]
     ])(
       "Returns a change list for arrays",
-      (a, b, changes) =>
-      {
+      (a, b, changes) => {
         expect(getChanges(a, b)).toStrictEqual(changes);
       }
     );
+
+    describe("Deletion Lookahead (FIFO Queue Operations)", () => {
+      it("Detects primitive shift+push as DELETE+INSERT instead of N updates", () => {
+        // [1, 2, 3, 4, 5] → [2, 3, 4, 5, 6]
+        const a = [1, 2, 3, 4, 5];
+        const b = [2, 3, 4, 5, 6];
+        const changes = getChanges(a, b);
+
+        expect(changes).toEqual([
+          [ChangeType.DELETE, 0, undefined],
+          [ChangeType.INSERT, 4, 6]
+        ]);
+      });
+
+      it("Detects pure deletion at head", () => {
+        const a = [1, 2, 3];
+        const b = [2, 3];
+        const changes = getChanges(a, b);
+
+        expect(changes).toEqual([
+          [ChangeType.DELETE, 0, undefined]
+        ]);
+      });
+
+      it("Detects object FIFO shift as DELETE+INSERT", () => {
+        const a = [{ "id": 0, }, { "id": 1, }, { "id": 2, }];
+        const b = [{ "id": 1, }, { "id": 2, }, { "id": 3, }];
+        const changes = getChanges(a, b);
+
+        expect(changes).toEqual([
+          [ChangeType.DELETE, 0, undefined],
+          [ChangeType.INSERT, 2, { "id": 3, }]
+        ]);
+      });
+
+      it("Produces O(1) changes for large FIFO shift", () => {
+        const size = 1000;
+        const a = Array.from({ "length": size, }, (_, i) => ({ "id": i, }));
+        const b = [...a.slice(1), { "id": size, }];
+        const changes = getChanges(a, b);
+
+        // Should be exactly 2 operations: 1 DELETE + 1 INSERT
+        expect(changes).toHaveLength(2);
+        expect(changes[0][0]).toBe(ChangeType.DELETE);
+        expect(changes[1][0]).toBe(ChangeType.INSERT);
+      });
+    });
   });
 
-  describe("When given strings", () =>
-  {
+  describe("When given strings", () => {
     it.each([
-      [ "", "" ],
-      [ "a", "a" ],
-      [ "hello, world!", "hello, world!" ]
-    ])("Returns undefined for identical sequences", (a, b) =>
-    {
+      ["", ""],
+      ["a", "a"],
+      ["hello, world!", "hello, world!"]
+    ])("Returns undefined for identical sequences", (a, b) => {
       expect(getChanges(a, b)).toStrictEqual([]);
     });
 
     it.each([
-      [ "a", "", [ [ ChangeType.DELETE, 0, undefined ] ] ],
-      [ "", "a", [ [ ChangeType.INSERT, 0, "a" ] ] ],
-      [ "a", "ab", [ [ ChangeType.INSERT, 1, "b" ] ] ],
-      [ "ab", "a", [ [ ChangeType.DELETE, 1, undefined ] ] ],
+      ["a", "", [[ChangeType.DELETE, 0, undefined]]],
+      ["", "a", [[ChangeType.INSERT, 0, "a"]]],
+      ["a", "ab", [[ChangeType.INSERT, 1, "b"]]],
+      ["ab", "a", [[ChangeType.DELETE, 1, undefined]]],
       [
         "ab",
         "ac",
         [
-          [ ChangeType.DELETE, 1, undefined ],
-          [ ChangeType.INSERT, 1, "c" ]
+          [ChangeType.DELETE, 1, undefined],
+          [ChangeType.INSERT, 1, "c"]
         ]
       ],
       [
         "ac",
         "bc",
         [
-          [ ChangeType.DELETE, 0, undefined ],
-          [ ChangeType.INSERT, 0, "b" ]
+          [ChangeType.DELETE, 0, undefined],
+          [ChangeType.INSERT, 0, "b"]
         ]
       ],
       [
         "ab",
         "",
         [
-          [ ChangeType.DELETE, 0, undefined ],
-          [ ChangeType.DELETE, 0, undefined ]
+          [ChangeType.DELETE, 0, undefined],
+          [ChangeType.DELETE, 0, undefined]
         ]
       ],
       [
         "",
         "ab",
         [
-          [ ChangeType.INSERT, 0, "a" ],
-          [ ChangeType.INSERT, 1, "b" ]
+          [ChangeType.INSERT, 0, "a"],
+          [ChangeType.INSERT, 1, "b"]
         ]
       ],
       // No common subsequence test cases.
@@ -422,24 +460,23 @@ describe("getChanges", () =>
         "a",
         "b",
         [
-          [ ChangeType.DELETE, 0, undefined ],
-          [ ChangeType.INSERT, 0, "b" ]
+          [ChangeType.DELETE, 0, undefined],
+          [ChangeType.INSERT, 0, "b"]
         ]
       ],
       [
         "ab",
         "cd",
         [
-          [ ChangeType.DELETE, 0, undefined ],
-          [ ChangeType.DELETE, 0, undefined ],
-          [ ChangeType.INSERT, 0, "c" ],
-          [ ChangeType.INSERT, 1, "d" ]
+          [ChangeType.DELETE, 0, undefined],
+          [ChangeType.DELETE, 0, undefined],
+          [ChangeType.INSERT, 0, "c"],
+          [ChangeType.INSERT, 1, "d"]
         ]
       ]
     ])(
       "Returns a change tuple for sequences that are different",
-      (a, b, diff) =>
-      {
+      (a, b, diff) => {
         expect(getChanges(a, b)).toStrictEqual(diff);
       }
     );
@@ -449,40 +486,39 @@ describe("getChanges", () =>
         "hello",
         "goodbye",
         [
-          [ ChangeType.INSERT, 0, "g" ],
-          [ ChangeType.INSERT, 1, "o" ],
-          [ ChangeType.INSERT, 2, "o" ],
-          [ ChangeType.INSERT, 3, "d" ],
-          [ ChangeType.INSERT, 4, "b" ],
-          [ ChangeType.INSERT, 5, "y" ],
-          [ ChangeType.DELETE, 6, undefined ],
-          [ ChangeType.DELETE, 7, undefined ],
-          [ ChangeType.DELETE, 7, undefined ],
-          [ ChangeType.DELETE, 7, undefined ]
+          [ChangeType.INSERT, 0, "g"],
+          [ChangeType.INSERT, 1, "o"],
+          [ChangeType.INSERT, 2, "o"],
+          [ChangeType.INSERT, 3, "d"],
+          [ChangeType.INSERT, 4, "b"],
+          [ChangeType.INSERT, 5, "y"],
+          [ChangeType.DELETE, 6, undefined],
+          [ChangeType.DELETE, 7, undefined],
+          [ChangeType.DELETE, 7, undefined],
+          [ChangeType.DELETE, 7, undefined]
         ]
       ],
       [
         "hello, world!",
         "goodbye, world.",
         [
-          [ ChangeType.INSERT, 0, "g" ],
-          [ ChangeType.INSERT, 1, "o" ],
-          [ ChangeType.INSERT, 2, "o" ],
-          [ ChangeType.INSERT, 3, "d" ],
-          [ ChangeType.INSERT, 4, "b" ],
-          [ ChangeType.INSERT, 5, "y" ],
-          [ ChangeType.DELETE, 6, undefined ],
-          [ ChangeType.DELETE, 7, undefined ],
-          [ ChangeType.DELETE, 7, undefined ],
-          [ ChangeType.DELETE, 7, undefined ],
-          [ ChangeType.INSERT, 14, "." ],
-          [ ChangeType.DELETE, 15, undefined ]
+          [ChangeType.INSERT, 0, "g"],
+          [ChangeType.INSERT, 1, "o"],
+          [ChangeType.INSERT, 2, "o"],
+          [ChangeType.INSERT, 3, "d"],
+          [ChangeType.INSERT, 4, "b"],
+          [ChangeType.INSERT, 5, "y"],
+          [ChangeType.DELETE, 6, undefined],
+          [ChangeType.DELETE, 7, undefined],
+          [ChangeType.DELETE, 7, undefined],
+          [ChangeType.DELETE, 7, undefined],
+          [ChangeType.INSERT, 14, "."],
+          [ChangeType.DELETE, 15, undefined]
         ]
       ]
     ])(
       "Adjusts indices to account for previous changes.",
-      (a, b, diff) =>
-      {
+      (a, b, diff) => {
         expect(getChanges(a, b)).toStrictEqual(diff);
       }
     );
