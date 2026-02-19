@@ -88,30 +88,58 @@ const yjs: YjsImpl = <S>(
     }
 
     /*
+     * Outbound Microtask Batching: multiple Zustand set() / setState() calls
+     * within the same event-loop tick are coalesced into a single Yjs
+     * transaction. This reduces complexity from O(T×N) to O(1×N) per tick.
+     */
+    let isOutboundPending = false;
+    // The Zustand state captured BEFORE the first set() / setState() of each batch.
+    // Subsequent calls in the same tick do not overwrite this; only the first-call
+    // "user's view" baseline is needed for the three-way merge guard.
+    let batchPreviousState: S | undefined;
+
+    const originalSetState = api.setState;
+
+    const flushOutbound = () => {
+      isOutboundPending = false;
+      const previousState = batchPreviousState;
+      batchPreviousState = undefined;
+      // Read the FINAL state after all synchronous mutations this tick.
+      doc.transact(() =>
+        patchSharedType(map, api.getState(), { ...options, previousState }), api);
+    };
+
+    const scheduleOutbound = (capturedPreviousState: S) => {
+      if (!isOutboundPending) {
+        isOutboundPending = true;
+        // Record the pre-mutation state only for the FIRST set() of this batch.
+        batchPreviousState = capturedPreviousState;
+        queueMicrotask(flushOutbound);
+      }
+    };
+
+    /*
      * Capture the initial state so that we can initialize the Yjs store to the
      * same values as the initial values of the Zustand store.
      */
     const initialState = config(
       /*
-       * Create a new set function that defers to the original and then passes
-       * the new state to patchSharedType.
+       * Create a new set function that applies local state immediately (for
+       * optimistic UI / React responsiveness) then schedules a Yjs sync.
        */
       (partial, replace) => {
-        const previousState = get();
+        const previousState = get() as S;
         set(partial as any, replace as any);
-        doc.transact(() =>
-          patchSharedType(map, get(), { ...options, previousState }), api);
+        scheduleOutbound(previousState);
       },
       get,
       api
     );
 
-    const originalSetState = api.setState;
     api.setState = (partial, replace) => {
-      const previousState = api.getState();
+      const previousState = api.getState() as S;
       originalSetState(partial as any, replace as any);
-      doc.transact(() =>
-        patchSharedType(map, api.getState(), { ...options, previousState }), api);
+      scheduleOutbound(previousState);
     };
 
     /*

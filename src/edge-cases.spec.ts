@@ -6,10 +6,8 @@ import { ChangeType, } from "./types";
 import { patchSharedType, } from "./patching";
 import { arrayToYArray, } from "./mapping";
 
-describe("Edge cases from fuzz testing", () =>
-{
-  it("Should handle nested arrays correctly (Case 1)", () =>
-  {
+describe("Edge cases from fuzz testing", () => {
+  it("Should handle nested arrays correctly (Case 1)", async () => {
     /*
      * Counterexample:
      * [[{"type":"set","key":"","value":
@@ -22,18 +20,21 @@ describe("Edge cases from fuzz testing", () =>
     const api = createVanilla<Record<string, any>>(yjs(doc, "shared", () =>
       ({})));
 
-    const value = [ [ false, "<=rH", "<=rH", true, "b;i63MU5#" ] ];
+    const value = [[false, "<=rH", "<=rH", true, "b;i63MU5#"]];
     api.setState({ "": value, });
 
     const state = api.getState();
-    const yState = map.toJSON();
 
     expect(state[""]).toEqual(value);
+
+    // Yjs writes are deferred; flush before asserting.
+    await Promise.resolve();
+    const yState = map.toJSON();
+
     expect(yState[""]).toEqual(value);
   });
 
-  it("Should handle complex nested structures (Case 3)", () =>
-  {
+  it("Should handle complex nested structures (Case 3)", async () => {
     /*
      * Counterexample:
      * [[["",{"x,":{"P9O":"o","2A47 m":[true,[true,"4 "],
@@ -47,7 +48,7 @@ describe("Edge cases from fuzz testing", () =>
         "P9O": "o",
         "2A47 m": [
           true,
-          [ true, "4 " ],
+          [true, "4 "],
           [
             680436100448947,
             null,
@@ -57,7 +58,7 @@ describe("Edge cases from fuzz testing", () =>
             false,
             1242072609498249
           ],
-          [ "", "", 1242072609498249 ]
+          ["", "", 1242072609498249]
         ],
       },
       "": {},
@@ -71,43 +72,44 @@ describe("Edge cases from fuzz testing", () =>
     api.setState({ [key]: value, });
 
     const state = api.getState();
-    const yState = map.toJSON();
 
     expect(state[key]).toEqual(value);
+
+    // Yjs writes are deferred; flush before asserting.
+    await Promise.resolve();
+    const yState = map.toJSON();
+
     expect(yState[key]).toEqual(value);
   });
 
   it(
     "Reproduction: Array update [\"b>Jz0\", 0] -> [\"b>Jz0\", \"b>Jz0\"]",
-    () =>
-    {
-      const a = [ "b>Jz0", 0 ];
-      const b = [ "b>Jz0", "b>Jz0" ];
+    () => {
+      const a = ["b>Jz0", 0];
+      const b = ["b>Jz0", "b>Jz0"];
 
       const changes = getChanges(a, b);
       console.log("Changes:", changes);
 
       expect(changes).toEqual([
-        [ ChangeType.UPDATE, 1, "b>Jz0" ]
+        [ChangeType.UPDATE, 1, "b>Jz0"]
       ]);
     }
   );
 
-  it("Reproduction: patchSharedType failure", () =>
-  {
+  it("Reproduction: patchSharedType failure", () => {
     const doc = new Y.Doc();
     const map = doc.getMap("shared");
     const key = "eR6";
 
     // Initial state in Yjs: ["b>Jz0", 0]
-    const initialArray = arrayToYArray([ "b>Jz0", 0 ]);
+    const initialArray = arrayToYArray(["b>Jz0", 0]);
     map.set(key, initialArray);
 
-    const newState = { [key]: [ "b>Jz0", "b>Jz0" ], };
+    const newState = { [key]: ["b>Jz0", "b>Jz0"], };
 
     // Patch Yjs
-    doc.transact(() =>
-    {
+    doc.transact(() => {
       patchSharedType(map, newState);
     });
 

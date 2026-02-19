@@ -29,6 +29,8 @@ describe("Concurrency: Three-Way Merge Strategy", () => {
 
     // 2. Initial State: { A: 1 }
     api.getState().addItem("A", 1);
+    // Flush outbound microtask so Yjs reflects the new state.
+    await Promise.resolve();
     expect((map.get("items") as any).toJSON()).toEqual({ "A": 1 });
 
     // 3. Capture Stale Snapshot
@@ -66,6 +68,9 @@ describe("Concurrency: Three-Way Merge Strategy", () => {
     });
 
     getStateSpy.mockRestore();
+
+    // Flush outbound microtask so the stale-snapshot setState is written to Yjs.
+    await Promise.resolve();
 
     // 6. Verification
     const finalMap = (map.get("items") as any).toJSON();

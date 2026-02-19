@@ -36,6 +36,8 @@ describe("Vulnerability Reproduction: Safe-Update Race Condition", () => {
 
     // 2. Initial State: Both Map and Store have { A: 1 }
     api.getState().addItem("A", 1);
+    // Flush outbound microtask so Yjs reflects the new state.
+    await Promise.resolve();
     expect((map.get("items") as any).toJSON()).toEqual({ "A": 1 });
 
     // 3. Simulate the "Race":
@@ -74,6 +76,9 @@ describe("Vulnerability Reproduction: Safe-Update Race Condition", () => {
     });
 
     getStateSpy.mockRestore();
+
+    // Flush outbound microtask so the stale-snapshot setState is written to Yjs.
+    await Promise.resolve();
 
     // 6. Verification:
     const finalMap = (map.get("items") as any).toJSON();

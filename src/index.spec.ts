@@ -40,7 +40,7 @@ describe("Yjs middleware", () => {
     expect(getState().count).toBe(1);
   });
 
-  it("Correctly updates Yjs when setState is called", () => {
+  it("Correctly updates Yjs when setState is called", async () => {
     type Store =
       {
         count: number,
@@ -67,6 +67,8 @@ describe("Yjs middleware", () => {
 
     api.setState({ "count": 1, });
 
+    // Yjs writes are deferred to the microtask queue; flush before asserting.
+    await Promise.resolve();
     expect(map.get("count")).toBe(1);
   });
 
@@ -121,7 +123,9 @@ describe("Yjs middleware", () => {
     getStateA().increment();
 
     expect(getStateA().count).toBe(1);
-    // Flush the microtask queue so the remote peer's batched patchStore fires.
+    // Tick 1: flush outbound on A → Yjs written → peer B's observer fires → schedules inbound.
+    await Promise.resolve();
+    // Tick 2: flush inbound on B → patchStore runs.
     await Promise.resolve();
     expect(getStateB().count).toBe(1);
   });
@@ -189,6 +193,7 @@ describe("Yjs middleware", () => {
     getStateA().getOlder();
 
     expect(getStateA().person.age).toBe(1);
+    await Promise.resolve();
     await Promise.resolve();
     expect(getStateB().person.age).toBe(1);
   });
@@ -275,6 +280,7 @@ describe("Yjs middleware", () => {
 
     expect(getStateA().owner.person.age).toBe(1);
     await Promise.resolve();
+    await Promise.resolve();
     expect(getStateB().owner.person.age).toBe(1);
   });
 
@@ -359,6 +365,7 @@ describe("Yjs middleware", () => {
     getStateA().join("bob");
 
     expect(getStateA().room.users).toEqual(["amy", "sam", "harold", "bob"]);
+    await Promise.resolve();
     await Promise.resolve();
     expect(getStateB().room.users).toEqual(["amy", "sam", "harold", "bob"]);
   });
@@ -959,7 +966,11 @@ describe("Yjs middleware in React", () => {
       // Trigger an update from doc1.
       getStateA().increment();
 
-      // onLoaded fires synchronously in the observer (before the batching guard).
+      // Tick 1: flush outbound on A → Yjs written → doc2 observer fires (onLoaded called here).
+      await Promise.resolve();
+
+      // onLoaded fires inside the observer callback, which runs synchronously during the
+      // outbound flush (before the inbound batching guard checks origin).
       expect(onLoaded).toHaveBeenCalled();
     });
 
