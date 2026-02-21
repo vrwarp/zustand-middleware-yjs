@@ -23,37 +23,45 @@ npm install github:vrwarp/zustand-middleware-yjs yjs
 Core API
 --------
 
-### `yjs(config, options)`
+### `yjs(doc, name, config, options)`
 
 The primary export is a middleware function that wraps a Zustand state creator.
 
 #### Parameters
 
-1.  **`config`** (`StateCreator`): The standard Zustand state creator function `(set, get, api) => State`.
+1.  **`doc`** (`Y.Doc`): The Y.Doc to back the store.
+2.  **`name`** (`string`): The name of the shared object (Y.Map) to use within the doc. Important: If multiple stores share the same Y.Doc, they MUST have unique names to avoid overwriting each other.
+3.  **`config`** (`StateCreator`): The standard Zustand state creator function `(set, get, api) => State`.
+4.  **`options`** (`YjsOptions` optional): Configuration object.
 
-2.  **`options`** (`YjsMiddlewareOptions`): Configuration object.
+#### `YjsOptions` Interface
 
-#### `YjsMiddlewareOptions` Interface
-
-```
-interface YjsMiddlewareOptions {
+```typescript
+interface YjsOptions {
   /**
-   * The Yjs Document instance to bind to.
-   * This document is the source of truth for synchronization.
+   * Specific keys that should be treated as atomic strings.
+   * Bypasses the default conversion of strings to Y.Text.
    */
-  doc: Y.Doc;
+  atomicKeys?: string[];
 
   /**
-   * The name of the root Y.Map within the document.
-   * All store state will be nested under this map.
-   * Defaults to 'shared'.
-   *
-   * Important: If multiple stores share the same Y.Doc,
-   * they MUST have unique names to avoid overwriting each other.
+   * Optional callback fired when the store first loads existing data from the Y.Doc.
    */
-  name?: string;
+  onLoaded?: () => void;
+
+  /**
+   * The schema version this client supports. When a remote peer writes a
+   * higher `__schemaVersion` into the Yjs document, the middleware permanently
+   * halts synchronization (Poison Pill).
+   */
+  schemaVersion?: number;
+
+  /**
+   * Callback fired once when the middleware detects a `__schemaVersion` that
+   * exceeds the local `schemaVersion`.
+   */
+  onObsolete?: (incomingVersion: number) => void;
 }
-
 ```
 
 Data Synchronization Model
@@ -93,6 +101,8 @@ const ydoc = new Y.Doc();
 // 2. Create Store
 const useStore = create(
   yjs(
+    ydoc,
+    'main-store', // Unique namespace in the Y.Doc
     (set) => ({
       // State
       count: 0,
@@ -103,8 +113,9 @@ const useStore = create(
       updateName: (name) => set((state) => ({ user: { ...state.user, name } }))
     }),
     {
-      doc: ydoc,
-      name: 'main-store' // Unique namespace in the Y.Doc
+      // Optional options
+      schemaVersion: 1,
+      onObsolete: (version) => { alert(`Client is outdated! version: ${version}`) }
     }
   )
 );
@@ -133,6 +144,8 @@ The middleware handles diffing for nested updates. You can use standard immutabl
 ```
 const useTodoList = create(
   yjs(
+    ydoc,
+    'todos',
     (set) => ({
       todos: [], // Maps to Y.Array
 
@@ -152,8 +165,7 @@ const useTodoList = create(
         // Performs a delete operation on the Y.Array
         todos: state.todos.filter(t => t.id !== id)
       }))
-    }),
-    { doc: ydoc, name: 'todos' }
+    })
   )
 );
 
@@ -194,10 +206,18 @@ import { StateCreator } from 'zustand';
 import * as Y from 'yjs';
 
 declare module 'zustand-middleware-yjs' {
+  export interface YjsOptions {
+    atomicKeys?: string[];
+    onLoaded?: () => void;
+    schemaVersion?: number;
+    onObsolete?: (incomingVersion: number) => void;
+  }
+
   export function yjs<T>(
+    doc: Y.Doc,
+    name: string,
     config: StateCreator<T>,
-    options: { doc: Y.Doc; name?: string }
+    options?: YjsOptions
   ): StateCreator<T>;
 }
-
 ```

@@ -36,6 +36,23 @@ export interface YjsOptions {
    * A callback that is called when the store is first loaded from the Yjs document.
    */
   onLoaded?: () => void;
+
+  /**
+   * The schema version this client supports. When a remote peer writes a
+   * higher `__schemaVersion` into the Yjs document, the middleware permanently
+   * halts synchronization to prevent legacy clients from corrupting upgraded
+   * data structures.
+   */
+  schemaVersion?: number;
+
+  /**
+   * Called once when the middleware detects a `__schemaVersion` in the Yjs
+   * document that exceeds the local `schemaVersion`. After this fires, all
+   * inbound and outbound sync is permanently disabled.
+   *
+   * @param incomingVersion The schema version found in the Yjs document.
+   */
+  onObsolete?: (incomingVersion: number) => void;
 }
 
 type YjsImpl = <T>(
@@ -77,6 +94,9 @@ const yjs: YjsImpl = <S>(
   // The root Y.Map that the store is written and read from.
   const map: Y.Map<any> = doc.getMap(name);
 
+  // Permanent kill switch: once set, no further inbound or outbound sync occurs.
+  let isObsolete = false;
+
   // Augment the store.
   return (set, get, api) => {
     // Initialize the loading state.
@@ -110,6 +130,8 @@ const yjs: YjsImpl = <S>(
     };
 
     const scheduleOutbound = (capturedPreviousState: S) => {
+      if (isObsolete) return; // Prevent local state from polluting newer CRDT schemas
+
       if (!isOutboundPending) {
         isOutboundPending = true;
         // Record the pre-mutation state only for the FIRST set() of this batch.
@@ -177,7 +199,19 @@ const yjs: YjsImpl = <S>(
     };
 
     map.observeDeep((_, transaction) => {
-      // 1. Initial Load Handling (unchanged behaviour).
+      if (isObsolete) return; // Permanently disabled
+
+      // 1. Poison Pill Check
+      if (options?.schemaVersion !== undefined) {
+        const incomingVersion = (map.get('__schemaVersion') as number | undefined) || 0;
+        if (incomingVersion > options.schemaVersion) {
+          isObsolete = true;
+          options.onObsolete?.(incomingVersion);
+          return;
+        }
+      }
+
+      // 2. Initial Load Handling (unchanged behaviour).
       if (!loaded && transaction.origin !== api) {
         loaded = true;
         options?.onLoaded?.();

@@ -74,6 +74,36 @@ render(
 );
 ```
 
+## Options
+
+The `yjs` middleware function takes an optional fourth argument, `options`:
+
+```typescript
+export interface YjsOptions {
+  atomicKeys?: string[];
+  onLoaded?: () => void;
+  schemaVersion?: number;
+  onObsolete?: (incomingVersion: number) => void;
+}
+```
+
+### Schema Version Guard (Poison Pill)
+
+To support backwards-incompatible breaking changes to your data model, you can provide a `schemaVersion` option. If a remote peer writes a `__schemaVersion` to the Yjs document that is strictly *greater* than your local `schemaVersion`, the middleware permanently halts all outbound and inbound synchronization. This "Poison Pill" prevents legacy clients from corrupting newly upgraded data structures offline and unintentionally syncing that corruption back to the network.
+
+When the poison pill is triggered, the `onObsolete` callback is fired, allowing your application to display an update prompt or reload the page.
+
+```tsx
+const useSharedStore = create(
+  yjs(ydoc, "shared", (set) => ({ count: 0 }), {
+    schemaVersion: 2,
+    onObsolete: (version) => {
+      alert(`Client is outdated! New schema version ${version} detected. Please refresh.`);
+    }
+  })
+);
+```
+
 ## Caveats
 
  1. The Yjs awareness protocol is not supported. At the moment, it is unclear
