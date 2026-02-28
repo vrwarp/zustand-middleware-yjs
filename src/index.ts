@@ -3,7 +3,7 @@ import {
   StoreMutatorIdentifier,
 } from "zustand";
 import * as Y from "yjs";
-import { patchSharedType, patchStore, } from "./patching";
+import { patchSharedType, patchState, patchStore, } from "./patching";
 
 type Yjs = <
   T,
@@ -144,7 +144,7 @@ const yjs: YjsImpl = <S>(
      * Capture the initial state so that we can initialize the Yjs store to the
      * same values as the initial values of the Zustand store.
      */
-    const initialState = config(
+    let initialState = config(
       /*
        * Create a new set function that applies local state immediately (for
        * optimistic UI / React responsiveness) then schedules a Yjs sync.
@@ -157,6 +157,11 @@ const yjs: YjsImpl = <S>(
       get,
       api
     );
+
+    if (map.size > 0) {
+      initialState = patchState(initialState, map.toJSON());
+      api.setState(initialState, true as any);
+    }
 
     api.setState = (partial, replace) => {
       const previousState = api.getState() as S;

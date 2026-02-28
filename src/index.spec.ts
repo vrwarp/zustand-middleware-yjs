@@ -665,6 +665,28 @@ describe("Yjs middleware", () => {
       }).not.toThrow();
     });
   });
+  describe("When initialized with a populated Y.Map", () => {
+    it("Hydrates the Zustand store with pre-existing data immediately.", () => {
+      type Store =
+        {
+          hello: string,
+        };
+
+      const doc = new Y.Doc();
+      const map = doc.getMap("test");
+      map.set("hello", "world");
+
+      const store = createVanilla<Store>(yjs(
+        doc,
+        "test",
+        () => ({
+          "hello": "default",
+        })
+      ));
+
+      expect(store.getState().hello).toBe("world");
+    });
+  });
 });
 
 describe("Yjs middleware with network provider", () => {
