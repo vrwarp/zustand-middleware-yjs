@@ -17,10 +17,11 @@ export const patchSharedType = (
   sharedType: Y.Map<any> | Y.Array<any> | Y.Text,
 
   newState: any,
-  options?: { atomicKeys?: string[], previousState?: any }
+  options?: { atomicKeys?: string[], disableYText?: boolean, yTextKeys?: string[], previousState?: any }
 ): void =>
 {
-  const changes = getChanges(sharedType.toJSON(), newState);
+  const sharedTypeJson = typeof sharedType.toJSON === "function" ? sharedType.toJSON() : sharedType.toString();
+  const changes = getChanges(sharedTypeJson, newState);
 
   changes.forEach(([ type, property, value ]) =>
   {
@@ -34,10 +35,20 @@ export const patchSharedType = (
         {
           if (typeof value === "string")
           {
-            if (options?.atomicKeys?.includes(property as string))
-              sharedType.set(property as string, value);
+            if (options?.disableYText)
+            {
+              if (options.yTextKeys?.includes(property as string))
+                sharedType.set(property as string, stringToYText(value));
+              else
+                sharedType.set(property as string, value);
+            }
             else
-              sharedType.set(property as string, stringToYText(value));
+            {
+              if (options?.atomicKeys?.includes(property as string))
+                sharedType.set(property as string, value);
+              else
+                sharedType.set(property as string, stringToYText(value));
+            }
           }
           else if (Array.isArray(value))
             sharedType.set(property as string, arrayToYArray(value, options));
@@ -55,7 +66,12 @@ export const patchSharedType = (
             sharedType.delete(index);
 
           if (typeof value === "string")
-            sharedType.insert(index, [ stringToYText(value) ]);
+          {
+            if (options?.disableYText)
+              sharedType.insert(index, [ value ]);
+            else
+              sharedType.insert(index, [ stringToYText(value) ]);
+          }
           else if (Array.isArray(value))
             sharedType.insert(index, [ arrayToYArray(value, options) ]);
           else if (typeof value === "object" && value !== null)
@@ -103,19 +119,93 @@ export const patchSharedType = (
 
         if (sharedType instanceof Y.Map)
         {
-          patchSharedType(
-            sharedType.get(property as string),
-            newState[property as string],
-            { ...options, previousState: childPreviousState }
-          );
+          const existing = sharedType.get(property as string);
+          const newValue = newState[property as string];
+          let isTextMappingMismatch = false;
+
+          if (typeof newValue === "string")
+          {
+            const wantsYText = options?.disableYText
+              ? options.yTextKeys?.includes(property as string)
+              : !options?.atomicKeys?.includes(property as string);
+
+            if (wantsYText && !(existing instanceof Y.Text))
+              isTextMappingMismatch = true;
+            else if (!wantsYText && (existing instanceof Y.Text))
+              isTextMappingMismatch = true;
+          }
+
+          if (isTextMappingMismatch)
+          {
+            const wantsYText = options?.disableYText
+              ? options.yTextKeys?.includes(property as string)
+              : !options?.atomicKeys?.includes(property as string);
+
+            if (wantsYText)
+              sharedType.set(property as string, stringToYText(newValue));
+            else
+              sharedType.set(property as string, newValue);
+          }
+          else
+          {
+            if (typeof newValue === "string" && !(existing instanceof Y.Text))
+            {
+              // Plain string diff - set it directly since primitive strings can't be patched incrementally
+              sharedType.set(property as string, newValue);
+            }
+            else
+            {
+              patchSharedType(
+                existing,
+                newValue,
+                { ...options, previousState: childPreviousState }
+              );
+            }
+          }
         }
         else if (sharedType instanceof Y.Array)
         {
-          patchSharedType(
-            sharedType.get(property as number),
-            newState[property as number],
-            { ...options, previousState: childPreviousState }
-          );
+          const existing = sharedType.get(property as number);
+          const newValue = newState[property as number];
+          let isTextMappingMismatch = false;
+
+          if (typeof newValue === "string")
+          {
+            const wantsYText = !options?.disableYText; // Arrays only support strings vs Y.Text based on disableYText, not keys
+
+            if (wantsYText && !(existing instanceof Y.Text))
+              isTextMappingMismatch = true;
+            else if (!wantsYText && (existing instanceof Y.Text))
+              isTextMappingMismatch = true;
+          }
+
+          if (isTextMappingMismatch)
+          {
+            sharedType.delete(property as number);
+
+            const wantsYText = !options?.disableYText;
+            if (wantsYText)
+              sharedType.insert(property as number, [ stringToYText(newValue) ]);
+            else
+              sharedType.insert(property as number, [ newValue ]);
+          }
+          else
+          {
+            if (typeof newValue === "string" && !(existing instanceof Y.Text))
+            {
+              // Plain string diff - update directly by replacing the element
+              sharedType.delete(property as number);
+              sharedType.insert(property as number, [ newValue ]);
+            }
+            else
+            {
+              patchSharedType(
+                existing,
+                newValue,
+                { ...options, previousState: childPreviousState }
+              );
+            }
+          }
         }
       }
       break;

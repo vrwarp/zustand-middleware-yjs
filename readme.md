@@ -81,11 +81,38 @@ The `yjs` middleware function takes an optional fourth argument, `options`:
 ```typescript
 export interface YjsOptions {
   atomicKeys?: string[];
+  disableYText?: boolean;
+  yTextKeys?: string[];
   onLoaded?: () => void;
   schemaVersion?: number;
   onObsolete?: (incomingVersion: number) => void;
 }
 ```
+
+### Disabling Y.Text Mapping globally
+
+By default, strings in the Zustand store are converted to `Y.Text` objects in Yjs to support collaborative text editing. However, if your application does not require collaborative text editing on strings, you can disable this default behavior globally by setting the `disableYText` option to `true`. This causes all strings to be stored as primitive strings in the Yjs map.
+
+```tsx
+const useSharedStore = create(
+  yjs(ydoc, "shared", (set) => ({ name: "Anonymous" }), {
+    disableYText: true,
+  })
+);
+```
+
+When `disableYText` is enabled, you can still opt-in specific keys to use `Y.Text` by providing a list of keys in `yTextKeys`:
+
+```tsx
+const useSharedStore = create(
+  yjs(ydoc, "shared", (set) => ({ name: "Anonymous", documentBody: "Initial content" }), {
+    disableYText: true,
+    yTextKeys: ["documentBody"]
+  })
+);
+```
+
+**Migrations:** The middleware handles data migration automatically. If you change a key from being mapped to `Y.Text` to a plain string (e.g. by enabling `disableYText` or adding it to `atomicKeys`), the next time the value is updated in Zustand, it will seamlessly overwrite the `Y.Text` object in Yjs with the plain string. The reverse is also true.
 
 ### Schema Version Guard (Poison Pill)
 
