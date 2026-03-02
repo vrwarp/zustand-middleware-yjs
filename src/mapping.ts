@@ -20,7 +20,7 @@ import * as Y from "yjs";
 
 export const arrayToYArray = (
   array: any[],
-  options?: { atomicKeys?: string[] }
+  options?: { atomicKeys?: string[], disableYText?: boolean, yTextKeys?: string[] }
 ): Y.Array<any> =>
 {
   const yarray = new Y.Array();
@@ -34,7 +34,12 @@ export const arrayToYArray = (
       yarray.push([ objectToYMap(value, options) ]);
 
     else if (typeof value === "string")
-      yarray.push([ stringToYText(value) ]);
+    {
+      if (options?.disableYText)
+        yarray.push([ value ]);
+      else
+        yarray.push([ stringToYText(value) ]);
+    }
 
     else if (typeof value !== "function")
       yarray.push([ value ]);
@@ -104,7 +109,7 @@ export const yArrayToArray = (yarray: Y.Array<any>): any[] =>
 
 export const objectToYMap = (
   object: Record<string, any>,
-  options?: { atomicKeys?: string[] }
+  options?: { atomicKeys?: string[], disableYText?: boolean, yTextKeys?: string[] }
 ): Y.Map<any> =>
 {
   const ymap = new Y.Map();
@@ -119,10 +124,20 @@ export const objectToYMap = (
 
     else if (typeof value === "string")
     {
-      if (options?.atomicKeys?.includes(property))
-        ymap.set(property, value);
+      if (options?.disableYText)
+      {
+        if (options.yTextKeys?.includes(property))
+          ymap.set(property, stringToYText(value));
+        else
+          ymap.set(property, value);
+      }
       else
-        ymap.set(property, stringToYText(value));
+      {
+        if (options?.atomicKeys?.includes(property))
+          ymap.set(property, value);
+        else
+          ymap.set(property, stringToYText(value));
+      }
     }
 
     else if (typeof value !== "function")

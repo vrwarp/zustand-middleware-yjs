@@ -33,6 +33,20 @@ export interface YjsOptions {
   atomicKeys?: string[];
 
   /**
+   * Disables the default behavior of converting strings to Y.Text objects.
+   * If true, all strings will be stored as primitive strings in the Yjs map.
+   */
+  disableYText?: boolean;
+
+  /**
+   * specific keys that should be treated as Y.Text objects when disableYText is true.
+   *
+   * When disableYText is enabled, this provides a way to opt-in specific keys to
+   * be stored as Y.Text.
+   */
+  yTextKeys?: string[];
+
+  /**
    * A callback that is called when the store is first loaded from the Yjs document.
    */
   onLoaded?: () => void;
