@@ -192,14 +192,15 @@ const getRecordChanges = (
 };
 
 const hasCommonSubsequence = (a: string, b: string) => {
-  const alphabetOfA = a.split("");
-  const alphabetOfB = b.split("");
+  const alphabetOfB = new Set(b);
 
-  let hasCommonSubsequence = false;
-  for (const c of alphabetOfA)
-    hasCommonSubsequence = hasCommonSubsequence || alphabetOfB.includes(c);
+  for (const c of a) {
+    if (alphabetOfB.has(c)) {
+      return true;
+    }
+  }
 
-  return hasCommonSubsequence;
+  return false;
 };
 
 /**
