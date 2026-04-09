@@ -3,6 +3,7 @@ import { createStore as create, } from "zustand/vanilla";
 import { arrayToYArray, objectToYMap, } from "./mapping";
 import {
   patchSharedType,
+  patchState,
   patchStore,
 } from "./patching";
 
@@ -694,5 +695,28 @@ describe("patchStore", () =>
     // Using patchStore logic here to test patchState internal return
     patchStore(store, { "count": 0, });
     expect(store.getState().count).toBe(0);
+  });
+});
+
+describe("patchState", () =>
+{
+  it("Applies PENDING changes to nested objects.", () =>
+  {
+    const oldState = {
+      "foo": {
+        "bar": 1,
+      },
+    };
+
+    const newState = {
+      "foo": {
+        "bar": 2,
+      },
+    };
+
+    const patchedState = patchState(oldState, newState);
+
+    expect(patchedState).toEqual(newState);
+    expect(patchedState.foo.bar).toBe(2);
   });
 });
