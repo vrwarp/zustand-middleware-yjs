@@ -316,7 +316,7 @@ export const patchState = (oldState: any, newState: any): any =>
 
           case ChangeType.PENDING:
           {
-            revisedObject[property] = applyChanges(object[property], value);
+            revisedObject[property] = applyChanges(revisedObject[property], value);
             return revisedObject;
           }
 
