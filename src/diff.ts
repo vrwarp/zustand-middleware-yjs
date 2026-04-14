@@ -36,19 +36,29 @@ const getStringChanges = (a: string, b: string): Change[] => {
   if (a === b)
     return [];
   else if (a.length === 0) {
-    return b.split("").map((character, index) =>
-      [ChangeType.INSERT, index, character]);
+    const changes: Change[] = new Array(b.length);
+    for (let i = 0; i < b.length; i++) {
+      changes[i] = [ChangeType.INSERT, i, b[i]];
+    }
+    return changes;
   }
   else if (b.length === 0) {
-    return a.split("").map(() =>
-      [ChangeType.DELETE, 0, undefined]);
+    const changes: Change[] = new Array(a.length);
+    for (let i = 0; i < a.length; i++) {
+      changes[i] = [ChangeType.DELETE, 0, undefined];
+    }
+    return changes;
   }
   else if (!hasCommonSubsequence(a, b)) {
-    const deletes = a.split("").map<Change>(() =>
-      [ChangeType.DELETE, 0, undefined]);
+    const deletes: Change[] = new Array(a.length);
+    for (let i = 0; i < a.length; i++) {
+      deletes[i] = [ChangeType.DELETE, 0, undefined];
+    }
 
-    const inserts = b.split("").map<Change>((character, index) =>
-      [ChangeType.INSERT, index, character]);
+    const inserts: Change[] = new Array(b.length);
+    for (let i = 0; i < b.length; i++) {
+      inserts[i] = [ChangeType.INSERT, i, b[i]];
+    }
 
     return deletes.concat(inserts);
   }
