@@ -473,6 +473,41 @@ describe("getChanges", () => {
           [ChangeType.INSERT, 0, "c"],
           [ChangeType.INSERT, 1, "d"]
         ]
+      ],
+      ["😀", "😀", []],
+      [
+        "",
+        "😀",
+        [
+          [ChangeType.INSERT, 0, "\uD83D"],
+          [ChangeType.INSERT, 1, "\uDE00"]
+        ]
+      ],
+      [
+        "😀",
+        "",
+        [
+          [ChangeType.DELETE, 0, undefined],
+          [ChangeType.DELETE, 0, undefined]
+        ]
+      ],
+      [
+        "😀",
+        "😁",
+        [
+          [ChangeType.DELETE, 0, undefined],
+          [ChangeType.DELETE, 0, undefined],
+          [ChangeType.INSERT, 0, "\uD83D"],
+          [ChangeType.INSERT, 1, "\uDE01"]
+        ]
+      ],
+      [
+        "I love 😀",
+        "I love 😁",
+        [
+          [ChangeType.DELETE, 8, undefined],
+          [ChangeType.INSERT, 8, "\uDE01"]
+        ]
       ]
     ])(
       "Returns a change tuple for sequences that are different",
