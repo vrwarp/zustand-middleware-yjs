@@ -51,7 +51,7 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:debug": "node --inspect-brk ./node_modules/jest/bin/jest.js --runInBand",
-    "build": "rollup --config rollup.config.ts --configPlugin @rollup/plugin-typescript",
+    "build": "rollup --config rollup.config.mjs",
     "prepare": "npm run build && node -e \"try { require('child_process').execSync('husky install') } catch (e) {}\""
   },
   "dependencies": {
