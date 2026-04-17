@@ -52,7 +52,7 @@
     "test:watch": "jest --watch",
     "test:debug": "node --inspect-brk ./node_modules/jest/bin/jest.js --runInBand",
     "build": "rollup --config rollup.config.mjs",
-    "prepare": "node -e \"const fs = require('fs'); const cp = require('child_process'); if (fs.existsSync('tsconfig.json')) cp.execSync('npm run build', {stdio:'inherit'}); try { if (fs.existsSync('.git')) cp.execSync('husky install', {stdio:'inherit'}) } catch(e) {}\""
+    "prepare": "husky install || true"
   },
   "dependencies": {
     "original-package-name": "file:.",
