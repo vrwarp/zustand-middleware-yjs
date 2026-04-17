@@ -55,7 +55,7 @@
     "prepare": "husky install && npm run build"
   },
   "dependencies": {
-    "original-package-name": "git+https://github.com/joebobmiles/zustand-middleware-yjs.git",
+    "original-package-name": "file:.",
     "use-sync-external-store": "^1.6.0",
     "yjs": "^13.5.11",
     "zustand": "^5.0.9"
@@ -71,7 +71,8 @@
     "@testing-library/react": "^16.3.1",
     "@types/jest": "^29.5.0",
     "@types/ws": "^7.4.7",
-    "eslint": "^9.39.2",
+    "eslint": "^9.39.4",
+    "eslint-config-sheriff": "^31.3.0",
     "fast-check": "^4.5.3",
     "globals": "^16.5.0",
     "husky": "^7.0.1",
