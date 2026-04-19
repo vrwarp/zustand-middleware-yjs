@@ -1,15 +1,14 @@
-import * as Y from "yjs";
-export declare const arrayToYArray: (array: any[], options?: {
+import * as yjs from "yjs";
+import { type Change } from "./types";
+export interface MappingOptions {
     atomicKeys?: string[];
     disableYText?: boolean;
     yTextKeys?: string[];
-}) => Y.Array<any>;
-export declare const yArrayToArray: (yarray: Y.Array<any>) => any[];
-export declare const objectToYMap: (object: Record<string, any>, options?: {
-    atomicKeys?: string[];
-    disableYText?: boolean;
-    yTextKeys?: string[];
-}) => Y.Map<any>;
-export declare const yMapToObject: (ymap: Y.Map<any>) => any;
-export declare const yTextToString: (ytext: Y.Text) => string;
-export declare const stringToYText: (string: string) => Y.Text;
+}
+export declare const stringToYText: (value: string) => yjs.Text;
+export declare const yTextToString: (ytext: yjs.Text) => string;
+export declare const arrayToYArray: (array: unknown[], { atomicKeys, disableYText, yTextKeys, }?: MappingOptions) => yjs.Array<unknown>;
+export declare const yArrayToArray: (yarray: yjs.Array<unknown>) => unknown[];
+export declare const objectToYMap: (object: Record<string, unknown>, { atomicKeys, disableYText, yTextKeys, }?: MappingOptions) => yjs.Map<unknown>;
+export declare const yMapToObject: (ymap: yjs.Map<unknown>) => Record<string, unknown>;
+export declare const yTypeToChanges: (ytype: yjs.Map<unknown> | yjs.Array<unknown> | yjs.Text) => Change[];

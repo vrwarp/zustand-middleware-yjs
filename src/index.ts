@@ -1,16 +1,16 @@
-import {
+import type * as yjs from "yjs";
+import type {
   StateCreator,
   StoreMutatorIdentifier,
 } from "zustand";
-import * as Y from "yjs";
-import { patchSharedType, patchState, patchStore, } from "./patching";
+import { patchSharedType, patchState, patchStore } from "./patching";
 
 type Yjs = <
   T,
   Mps extends [StoreMutatorIdentifier, unknown][] = [],
   Mcs extends [StoreMutatorIdentifier, unknown][] = []
 >(
-  doc: Y.Doc,
+  doc: yjs.Doc,
   name: string,
   f: StateCreator<T, Mps, Mcs>,
   options?: YjsOptions
@@ -21,7 +21,7 @@ type Yjs = <
  */
 export interface YjsOptions {
   /**
-   * specific keys that should be treated as atomic strings.
+   * Specific keys that should be treated as atomic strings.
    *
    * By default, strings in the Zustand store are converted to Y.Text objects
    * in Yjs to support collaborative text editing. However, for some strings
@@ -39,7 +39,7 @@ export interface YjsOptions {
   disableYText?: boolean;
 
   /**
-   * specific keys that should be treated as Y.Text objects when disableYText is true.
+   * Specific keys that should be treated as Y.Text objects when disableYText is true.
    *
    * When disableYText is enabled, this provides a way to opt-in specific keys to
    * be stored as Y.Text.
@@ -64,61 +64,77 @@ export interface YjsOptions {
    * document that exceeds the local `schemaVersion`. After this fires, all
    * inbound and outbound sync is permanently disabled.
    *
-   * @param incomingVersion The schema version found in the Yjs document.
+   * @param incomingVersion - The schema version found in the Yjs document.
    */
   onObsolete?: (incomingVersion: number) => void;
 }
 
 type YjsImpl = <T>(
-  doc: Y.Doc,
+  doc: yjs.Doc,
   name: string,
-  config: StateCreator<T, [], []>,
+  config: StateCreator<T>,
   options?: YjsOptions
-) => StateCreator<T, [], []>;
+) => StateCreator<T>;
 
 
 /**
  * This function is the middleware the sets up the Zustand store to mirror state
  * into a Yjs store for peer-to-peer synchronization.
  *
+ * @param doc - The Yjs document to create the store in.
+ * @param name - The name that the store should be listed under in the doc.
+ * @param config - The initial state of the store we should be using.
+ * @param middlewareOptions - The options for the middleware.
+ * @returns A Zustand state creator.
  * @example <caption>Using yjs</caption>
  * const useState = create(
  *   yjs(
- *     new Y.Doc(), // A Y.Doc to back our store with.
- *     "shared",    // A name to give the Y.Map our store is backed by.
- *     (set) =>
- *     ({
+ *     new yjs.Doc(), // A yjs.Doc to back our store with.
+ *     "shared",    // A name to give the yjs.Map our store is backed by.
+ *     (set) =\>
+ *     (\{
  *       "count": 1,
- *     })
+ *     \})
  *   )
  * );
- *
- * @param doc The Yjs document to create the store in.
- * @param name The name that the store should be listed under in the doc.
- * @param config The initial state of the store we should be using.
- * @param options The options for the middleware.
- * @returns A Zustand state creator.
  */
-const yjs: YjsImpl = <S>(
-  doc: Y.Doc,
+const yjsImpl: YjsImpl = <S>(
+  doc: yjs.Doc,
   name: string,
   config: StateCreator<S>,
-  options?: YjsOptions
+  {
+    atomicKeys,
+    disableYText,
+    onLoaded,
+    onObsolete,
+    schemaVersion,
+    yTextKeys,
+  }: YjsOptions = {}
 ): StateCreator<S> => {
   // The root Y.Map that the store is written and read from.
-  const map: Y.Map<any> = doc.getMap(name);
+  const map: yjs.Map<unknown> = doc.getMap(name);
+  const middlewareOptions = {
+    atomicKeys,
+    disableYText,
+    onLoaded,
+    onObsolete,
+    schemaVersion,
+    yTextKeys,
+  };
 
   // Permanent kill switch: once set, no further inbound or outbound sync occurs.
   let isObsolete = false;
 
-  // Augment the store.
+  /**
+   * Augment the store.
+   */
   return (set, get, api) => {
     // Initialize the loading state.
-    let loaded = false;
+    let isLoaded = false;
 
     if (map.size > 0) {
-      loaded = true;
-      options?.onLoaded?.();
+      isLoaded = true;
+      onLoaded?.();
     }
 
     /*
@@ -137,14 +153,18 @@ const yjs: YjsImpl = <S>(
     const flushOutbound = () => {
       isOutboundPending = false;
       const previousState = batchPreviousState;
+
       batchPreviousState = undefined;
       // Read the FINAL state after all synchronous mutations this tick.
-      doc.transact(() =>
-        patchSharedType(map, api.getState(), { ...options, previousState }), api);
+      doc.transact(() => {
+        patchSharedType(map, api.getState(), { ...middlewareOptions, previousState });
+      }, api);
     };
 
     const scheduleOutbound = (capturedPreviousState: S) => {
-      if (isObsolete) return; // Prevent local state from polluting newer CRDT schemas
+      if (isObsolete) {
+        return;
+      } // Prevent local state from polluting newer CRDT schemas
 
       if (!isOutboundPending) {
         isOutboundPending = true;
@@ -159,12 +179,15 @@ const yjs: YjsImpl = <S>(
      * same values as the initial values of the Zustand store.
      */
     let initialState = config(
-      /*
+      /**
+       *
        * Create a new set function that applies local state immediately (for
        * optimistic UI / React responsiveness) then schedules a Yjs sync.
        */
       (partial, replace) => {
-        const previousState = get() as S;
+        const previousState = get();
+
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any
         set(partial as any, replace as any);
         scheduleOutbound(previousState);
       },
@@ -173,12 +196,14 @@ const yjs: YjsImpl = <S>(
     );
 
     if (map.size > 0) {
-      initialState = patchState(initialState, map.toJSON());
-      api.setState(initialState, true as any);
+      initialState = patchState(initialState, map.toJSON() as S);
+      api.setState(initialState, true);
     }
 
     api.setState = (partial, replace) => {
-      const previousState = api.getState() as S;
+      const previousState = api.getState();
+
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any
       originalSetState(partial as any, replace as any);
       scheduleOutbound(previousState);
     };
@@ -217,29 +242,35 @@ const yjs: YjsImpl = <S>(
       );
     };
 
-    map.observeDeep((_, transaction) => {
-      if (isObsolete) return; // Permanently disabled
+    map.observeDeep((unusedArg, transaction) => {
+      if (isObsolete) {
+        return;
+      } // Permanently disabled
 
       // 1. Poison Pill Check
-      if (options?.schemaVersion !== undefined) {
-        const incomingVersion = (map.get('__schemaVersion') as number | undefined) || 0;
-        if (incomingVersion > options.schemaVersion) {
+      if (schemaVersion !== undefined) {
+        const incomingVersion = (map.get("__schemaVersion") as number | undefined) || 0;
+
+        if (incomingVersion > schemaVersion) {
           isObsolete = true;
-          options.onObsolete?.(incomingVersion);
+          onObsolete?.(incomingVersion);
+
           return;
         }
       }
 
       // 2. Initial Load Handling (unchanged behaviour).
-      if (!loaded && transaction.origin !== api) {
-        loaded = true;
-        options?.onLoaded?.();
+      if (!isLoaded && transaction.origin !== api) {
+        isLoaded = true;
+        onLoaded?.();
       }
 
       // 2. Local Echo Suppression.
       // If we originated this transaction, the Zustand store is already
       // up-to-date. Skip the round-trip entirely.
-      if (transaction.origin === api) return;
+      if (transaction.origin === api) {
+        return;
+      }
 
       // 3. Microtask Coalescing.
       // Schedule at most one synchronisation per event-loop tick.
@@ -254,4 +285,4 @@ const yjs: YjsImpl = <S>(
   };
 };
 
-export default yjs as unknown as Yjs;
+export default yjsImpl as unknown as Yjs;

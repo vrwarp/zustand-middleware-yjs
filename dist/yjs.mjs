@@ -1,663 +1,593 @@
-import * as Y from 'yjs';
+import * as yjs from 'yjs';
 
-/******************************************************************************
-Copyright (c) Microsoft Corporation.
-
-Permission to use, copy, modify, and/or distribute this software for any
-purpose with or without fee is hereby granted.
-
-THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
-REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
-AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
-INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
-LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
-OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
-PERFORMANCE OF THIS SOFTWARE.
-***************************************************************************** */
-
-var __assign = function() {
-  __assign = Object.assign || function __assign(t) {
-      for (var s, i = 1, n = arguments.length; i < n; i++) {
-          s = arguments[i];
-          for (var p in s) if (Object.prototype.hasOwnProperty.call(s, p)) t[p] = s[p];
-      }
-      return t;
-  };
-  return __assign.apply(this, arguments);
+const changeType = {
+    none: "none",
+    insert: "insert",
+    update: "update",
+    delete: "delete",
+    pending: "pending",
 };
 
-function __spreadArray(to, from, pack) {
-  if (pack || arguments.length === 2) for (var i = 0, l = from.length, ar; i < l; i++) {
-      if (ar || !(i in from)) {
-          if (!ar) ar = Array.prototype.slice.call(from, 0, i);
-          ar[i] = from[i];
-      }
-  }
-  return to.concat(ar || Array.prototype.slice.call(from));
-}
-
-typeof SuppressedError === "function" ? SuppressedError : function (error, suppressed, message) {
-  var e = new Error(message);
-  return e.name = "SuppressedError", e.error = error, e.suppressed = suppressed, e;
-};
-
-var ChangeType;
-(function (ChangeType) {
-    ChangeType["NONE"] = "none";
-    ChangeType["INSERT"] = "insert";
-    ChangeType["UPDATE"] = "update";
-    ChangeType["DELETE"] = "delete";
-    ChangeType["PENDING"] = "pending";
-})(ChangeType || (ChangeType = {}));
-
-var isDiffable = function (v) {
-    return isArray(v) || isString(v) || v instanceof Object;
-};
-var isArray = function (d) {
-    return d instanceof Array;
-};
-var isString = function (d) {
-    return typeof d === "string";
-};
-var isRecord = function (d) {
-    return !isArray(d) && !isString(d) && typeof d === "object" && d !== null;
-};
-var isSameType = function (a, b) {
-    if (isArray(a))
-        return isArray(b);
-    if (isString(a))
-        return isString(b);
-    if (isRecord(a))
-        return isRecord(b);
-    return false;
-};
-var getChanges = function (a, b) {
-    if (isString(a) && isString(b))
-        return getStringChanges(a, b);
-    else if (isArray(a) && isArray(b))
-        return getArrayChanges(a, b);
-    else if (isRecord(a) && isRecord(b))
-        return getRecordChanges(a, b);
-    else
-        return [];
-};
-var getStringChanges = function (a, b) {
-    if (a === b)
-        return [];
-    else if (a.length === 0) {
-        return b.split("").map(function (character, index) {
-            return [ChangeType.INSERT, index, character];
-        });
+const isDiffable = (d) => { return typeof d === "string" || (typeof d === "object" && d !== null); };
+const isRecord = (d) => { return typeof d === "object" && d !== null && !Array.isArray(d); };
+const isSameType = (a, b) => {
+    if (typeof a === "string" && typeof b === "string") {
+        return true;
     }
-    else if (b.length === 0) {
-        return a.split("").map(function () {
-            return [ChangeType.DELETE, 0, undefined];
-        });
-    }
-    else if (!hasCommonSubsequence(a, b)) {
-        var deletes = a.split("").map(function () {
-            return [ChangeType.DELETE, 0, undefined];
-        });
-        var inserts = b.split("").map(function (character, index) {
-            return [ChangeType.INSERT, index, character];
-        });
-        return deletes.concat(inserts);
-    }
-    else {
-        var m = a.length, n = b.length;
-        var reverse = m >= n;
-        return reverse
-            ? _diffText(b, a, reverse)
-            : _diffText(a, b, reverse);
-    }
+    return (Array.isArray(a) && Array.isArray(b)) || (isRecord(a) && isRecord(b));
 };
-var getArrayChanges = function (a, b) {
-    var changeList = [];
-    var finalIndices = 0;
-    var bOffset = 0;
-    var LOOKAHEAD_WINDOW = 10;
-    for (var index = 0; index < a.length; index++) {
-        var value = a[index];
-        var bIndex = index + bOffset;
-        if (bIndex >= b.length) {
-            changeList.push([ChangeType.DELETE, bIndex, undefined]);
-            continue;
-        }
-        var matchFound = false;
-        for (var k = 0; k <= LOOKAHEAD_WINDOW; k++) {
-            if (bIndex + k < b.length) {
-                var bValue = b[bIndex + k];
-                var isStrictMatch = value === bValue;
-                var isDeepMatch = !isStrictMatch && isDiffable(value) && isDiffable(bValue) && isSameType(value, bValue)
-                    ? getChanges(value, bValue).length === 0
-                    : false;
-                if (isStrictMatch || isDeepMatch) {
-                    if (k > 0) {
-                        for (var insertIdx = 0; insertIdx < k; insertIdx++) {
-                            changeList.push([ChangeType.INSERT, bIndex + insertIdx, b[bIndex + insertIdx]]);
-                        }
-                        finalIndices += (k + 1);
-                        bOffset += k;
-                    }
-                    else {
-                        finalIndices++;
-                    }
-                    matchFound = true;
-                    break;
-                }
-            }
-            if (k > 0 && index + k < a.length) {
-                var nextA = a[index + k];
-                var isStrictMatch = nextA === b[bIndex];
-                var isDeepMatch = !isStrictMatch && isDiffable(nextA) && isDiffable(b[bIndex]) && isSameType(nextA, b[bIndex])
-                    ? getChanges(nextA, b[bIndex]).length === 0
-                    : false;
-                if (isStrictMatch || isDeepMatch) {
-                    for (var deleteIdx = 0; deleteIdx < k; deleteIdx++) {
-                        changeList.push([ChangeType.DELETE, bIndex, undefined]);
-                    }
-                    index += (k - 1);
-                    bOffset -= k;
-                    matchFound = true;
-                    break;
-                }
-            }
-        }
-        if (matchFound)
-            continue;
-        if (isDiffable(value) && isDiffable(b[bIndex]) && isSameType(value, b[bIndex])) {
-            var currentDiff = getChanges(value, b[bIndex]);
-            if (currentDiff.length !== 0) {
-                changeList.push([ChangeType.PENDING, bIndex, currentDiff]);
-            }
-            finalIndices++;
-        }
-        else {
-            changeList.push([ChangeType.UPDATE, bIndex, b[bIndex]]);
-            finalIndices++;
-        }
-    }
-    if (finalIndices < b.length) {
-        b.slice(a.length + bOffset).forEach(function (value, index) {
-            return changeList.push([ChangeType.INSERT, finalIndices + index, value]);
-        });
-    }
-    return changeList;
-};
-var getRecordChanges = function (a, b) {
-    var changeList = [];
-    Object.entries(a).forEach(function (_a) {
-        var property = _a[0], value = _a[1];
-        if (!(property in b) && !(value instanceof Function))
-            changeList.push([ChangeType.DELETE, property, undefined]);
-    });
-    Object.entries(b).forEach(function (_a) {
-        var property = _a[0], value = _a[1];
-        if (!(property in a))
-            changeList.push([ChangeType.INSERT, property, value]);
-        else if (isDiffable(a[property])
-            && isDiffable(value)
-            && isSameType(a[property], value)) {
-            var d = getChanges(a[property], value);
-            if (d.length !== 0)
-                changeList.push([ChangeType.PENDING, property, d]);
-        }
-        else if (a[property] !== value)
-            changeList.push([ChangeType.UPDATE, property, value]);
-    });
-    return changeList;
-};
-var hasCommonSubsequence = function (a, b) {
-    var alphabetOfB = new Set(b);
-    for (var _i = 0, a_1 = a; _i < a_1.length; _i++) {
-        var c = a_1[_i];
-        if (alphabetOfB.has(c)) {
+const hasCommonSubsequence = (a, b) => {
+    const alphabetOfB = new Set(b);
+    for (const char of a) {
+        if (alphabetOfB.has(char)) {
             return true;
         }
     }
     return false;
 };
-var _diffText = function (a, b, isReversed) {
-    var m = a.length, n = b.length;
-    var offset = m;
-    var delta = n - m;
-    var size = m + n + 1;
-    var frontierPoints = [];
-    for (var i = 0; i < size; i++)
-        frontierPoints[i] = -1;
-    var path = [];
-    for (var i = 0; i < size; i++)
-        path[i] = -1;
-    var pathPositions = [];
-    var snake = function (k, p, q) {
-        var y = Math.max(p, q);
-        var x = y - k;
-        while (x < m && y < n && a[x] === b[y]) {
-            x++;
-            y++;
+const diffTextInternal = (a, b, isReversed) => {
+    const m = a.length;
+    const n = b.length;
+    const offset = m;
+    const delta = n - m;
+    const size = m + n + 1;
+    const frontierPoints = Array.from({ length: size }, () => -1);
+    const path = Array.from({ length: size }, () => -1);
+    const pathPositions = [];
+    const snake = (snakeK, snakeP, snakeQ) => {
+        let innerY = Math.max(snakeP, snakeQ);
+        let innerX = innerY - snakeK;
+        while (innerX < m && innerY < n && a[innerX] === b[innerY]) {
+            innerX = innerX + 1;
+            innerY = innerY + 1;
         }
-        path[k + offset] = pathPositions.length;
-        pathPositions[pathPositions.length] = {
-            "x": x,
-            "y": y,
-            "k": p > q ? path[k + offset - 1] : path[k + offset + 1],
+        const pathIdx = pathPositions.length;
+        path[snakeK + offset] = pathIdx;
+        pathPositions[pathIdx] = {
+            k: snakeP > snakeQ ? path[snakeK + offset - 1] : path[snakeK + offset + 1],
+            x: innerX,
+            y: innerY,
         };
-        return y;
+        return innerY;
     };
-    var p = -1;
+    let loopP = -1;
     do {
-        p++;
-        for (var k_1 = -p; k_1 < delta; k_1++) {
-            frontierPoints[k_1 + offset] = snake(k_1, frontierPoints[k_1 + offset - 1] + 1, frontierPoints[k_1 + offset + 1]);
+        loopP = loopP + 1;
+        for (let k = -loopP; k < delta; k = k + 1) {
+            frontierPoints[k + offset] = snake(k, frontierPoints[k + offset - 1] + 1, frontierPoints[k + offset + 1]);
         }
-        for (var k_2 = delta + p; k_2 > delta; k_2--) {
-            frontierPoints[k_2 + offset] = snake(k_2, frontierPoints[k_2 + offset - 1] + 1, frontierPoints[k_2 + offset + 1]);
+        for (let k = delta + loopP; k > delta; k = k - 1) {
+            frontierPoints[k + offset] = snake(k, frontierPoints[k + offset - 1] + 1, frontierPoints[k + offset + 1]);
         }
         frontierPoints[delta + offset] = snake(delta, frontierPoints[delta + offset - 1] + 1, frontierPoints[delta + offset + 1]);
     } while (frontierPoints[delta + offset] !== n);
-    var k = path[delta + offset];
-    var editPath = [];
-    while (k !== -1) {
-        editPath[editPath.length] = {
-            "x": pathPositions[k].x,
-            "y": pathPositions[k].y,
-        };
-        k = pathPositions[k].k;
+    let traceK = path[delta + offset];
+    const editPath = [];
+    while (traceK !== -1) {
+        const pos = pathPositions[traceK];
+        editPath.push({ x: pos.x, y: pos.y });
+        traceK = pos.k;
     }
-    var changeList = [];
-    var x = 0, y = 0, index = -1;
-    for (var i = editPath.length - 1; i >= 0; i--) {
-        while (x <= editPath[i].x || y <= editPath[i].y) {
-            if (editPath[i].y - editPath[i].x > y - x) {
+    const changeList = [];
+    let curX = 0;
+    let curY = 0;
+    let curIndex = -1;
+    for (let i = editPath.length - 1; i >= 0; i = i - 1) {
+        const point = editPath[i];
+        while (curX <= point.x || curY <= point.y) {
+            if (point.y - point.x > curY - curX) {
                 if (isReversed) {
-                    changeList[changeList.length] = [
-                        ChangeType.DELETE,
-                        index,
-                        undefined
-                    ];
+                    changeList.push([changeType.delete, curIndex, undefined]);
                 }
                 else {
-                    changeList[changeList.length] = [
-                        ChangeType.INSERT,
-                        index,
-                        b[y - 1]
-                    ];
-                    index++;
+                    changeList.push([changeType.insert, curIndex, b[curY - 1]]);
+                    curIndex = curIndex + 1;
                 }
-                y++;
+                curY = curY + 1;
             }
-            else if (editPath[i].y - editPath[i].x < y - x) {
+            else if (point.y - point.x < curY - curX) {
                 if (isReversed) {
-                    changeList[changeList.length] = [
-                        ChangeType.INSERT,
-                        index,
-                        a[x - 1]
-                    ];
-                    index++;
+                    changeList.push([changeType.insert, curIndex, a[curX - 1]]);
+                    curIndex = curIndex + 1;
                 }
                 else {
-                    changeList[changeList.length] = [
-                        ChangeType.DELETE,
-                        index,
-                        undefined
-                    ];
+                    changeList.push([changeType.delete, curIndex, undefined]);
                 }
-                x++;
+                curX = curX + 1;
             }
             else {
-                x++;
-                y++;
-                index++;
+                curX = curX + 1;
+                curY = curY + 1;
+                curIndex = curIndex + 1;
             }
         }
     }
     return changeList;
 };
-
-var arrayToYArray = function (array, options) {
-    var yarray = new Y.Array();
-    array.forEach(function (value) {
-        if (Array.isArray(value))
-            yarray.push([arrayToYArray(value, options)]);
-        else if (typeof value === "object" && value !== null)
-            yarray.push([objectToYMap(value, options)]);
-        else if (typeof value === "string") {
-            if (options === null || options === void 0 ? void 0 : options.disableYText)
-                yarray.push([value]);
-            else
-                yarray.push([stringToYText(value)]);
+const getChangesText = (a, b) => {
+    if (!hasCommonSubsequence(a, b)) {
+        const deletes = [...a].map(() => [changeType.delete, 0, undefined]);
+        const inserts = [...b].map((character, index) => [changeType.insert, index, character]);
+        return [...deletes, ...inserts];
+    }
+    const m = a.length;
+    const n = b.length;
+    const isReverse = m >= n;
+    return isReverse ? diffTextInternal(b, a, isReverse) : diffTextInternal(a, b, isReverse);
+};
+const getArrayChanges = (a, b) => {
+    const changeList = [];
+    let finalIndices = 0;
+    let bOffset = 0;
+    const LOOKAHEAD_WINDOW = 10;
+    for (let index = 0; index < a.length; index = index + 1) {
+        const value = a[index];
+        const bIndex = index + bOffset;
+        if (bIndex >= b.length) {
+            changeList.push([changeType.delete, bIndex, undefined]);
+            continue;
         }
-        else if (typeof value !== "function")
-            yarray.push([value]);
-    });
+        let isMatchFound = false;
+        for (let k = 0; k <= LOOKAHEAD_WINDOW; k = k + 1) {
+            if (bIndex + k < b.length) {
+                const bValue = b[bIndex + k];
+                const isStrictMatch = value === bValue;
+                const isDeepMatch = !isStrictMatch &&
+                    isDiffable(value) &&
+                    isDiffable(bValue) &&
+                    isSameType(value, bValue)
+                    ? getChanges(value, bValue).length === 0
+                    : false;
+                if (isStrictMatch || isDeepMatch) {
+                    if (k > 0) {
+                        for (let insertIdx = 0; insertIdx < k; insertIdx = insertIdx + 1) {
+                            changeList.push([changeType.insert, bIndex + insertIdx, b[bIndex + insertIdx]]);
+                        }
+                        finalIndices = finalIndices + k + 1;
+                        bOffset = bOffset + k;
+                    }
+                    else {
+                        finalIndices = finalIndices + 1;
+                    }
+                    isMatchFound = true;
+                    break;
+                }
+            }
+            if (k > 0 && index + k < a.length) {
+                const nextA = a[index + k];
+                const isStrictMatch = nextA === b[bIndex];
+                const isDeepMatch = !isStrictMatch &&
+                    isDiffable(nextA) &&
+                    isDiffable(b[bIndex]) &&
+                    isSameType(nextA, b[bIndex])
+                    ? getChanges(nextA, b[bIndex]).length === 0
+                    : false;
+                if (isStrictMatch || isDeepMatch) {
+                    for (let deleteIdx = 0; deleteIdx < k; deleteIdx = deleteIdx + 1) {
+                        changeList.push([changeType.delete, bIndex, undefined]);
+                    }
+                    index = index + (k - 1);
+                    bOffset = bOffset - k;
+                    isMatchFound = true;
+                    break;
+                }
+            }
+        }
+        if (isMatchFound) {
+            continue;
+        }
+        if (isDiffable(value) && isDiffable(b[bIndex]) && isSameType(value, b[bIndex])) {
+            const currentDiff = getChanges(value, b[bIndex]);
+            if (currentDiff.length > 0) {
+                changeList.push([changeType.pending, bIndex, currentDiff]);
+            }
+            finalIndices = finalIndices + 1;
+        }
+        else {
+            changeList.push([changeType.update, bIndex, b[bIndex]]);
+            finalIndices = finalIndices + 1;
+        }
+    }
+    if (finalIndices < b.length) {
+        const trailingValues = b.slice(a.length + bOffset);
+        for (const [i, trailingValue] of trailingValues.entries()) {
+            changeList.push([changeType.insert, finalIndices + i, trailingValue]);
+        }
+    }
+    return changeList;
+};
+const getRecordChanges = (a, b) => {
+    const changeList = [];
+    for (const [property, value] of Object.entries(a)) {
+        if (!(property in b) && !(value instanceof Function)) {
+            changeList.push([changeType.delete, property, undefined]);
+        }
+    }
+    for (const [property, value] of Object.entries(b)) {
+        if (!(property in a)) {
+            changeList.push([changeType.insert, property, value]);
+        }
+        else if (isDiffable(a[property]) && isDiffable(value) && isSameType(a[property], value)) {
+            const d = getChanges(a[property], value);
+            if (d.length > 0) {
+                changeList.push([changeType.pending, property, d]);
+            }
+        }
+        else if (a[property] !== value) {
+            changeList.push([changeType.update, property, value]);
+        }
+    }
+    return changeList;
+};
+const getChanges = (a, b) => {
+    if (typeof a === "string" && typeof b === "string") {
+        return getChangesText(a, b);
+    }
+    if (Array.isArray(a) && Array.isArray(b)) {
+        return getArrayChanges(a, b);
+    }
+    if (isRecord(a) && isRecord(b)) {
+        return getRecordChanges(a, b);
+    }
+    return [];
+};
+
+const isObject = (value) => {
+    return (typeof value === "object" &&
+        value !== null &&
+        !Array.isArray(value) &&
+        !(value instanceof yjs.AbstractType) &&
+        !(value instanceof yjs.Doc));
+};
+const stringToYText = (value) => new yjs.Text(value);
+const arrayToYArray = (array, { atomicKeys = [], disableYText = false, yTextKeys = [], } = {}) => {
+    const options = { atomicKeys, disableYText, yTextKeys };
+    const yarray = new yjs.Array();
+    const mappedArray = [];
+    for (const value of array) {
+        if (typeof value === "function") {
+            continue;
+        }
+        if (typeof value === "string") {
+            mappedArray.push(options.disableYText ? value : stringToYText(value));
+        }
+        else if (Array.isArray(value)) {
+            mappedArray.push(arrayToYArray(value, options));
+        }
+        else if (isObject(value)) {
+            mappedArray.push(objectToYMap(value, options));
+        }
+        else {
+            mappedArray.push(value);
+        }
+    }
+    yarray.insert(0, mappedArray);
     return yarray;
 };
-var objectToYMap = function (object, options) {
-    var ymap = new Y.Map();
-    Object.entries(object).forEach(function (_a) {
-        var _b, _c;
-        var property = _a[0], value = _a[1];
-        if (Array.isArray(value))
-            ymap.set(property, arrayToYArray(value, options));
-        else if (typeof value === "object" && value !== null)
-            ymap.set(property, objectToYMap(value, options));
-        else if (typeof value === "string") {
-            if (options === null || options === void 0 ? void 0 : options.disableYText) {
-                if ((_b = options.yTextKeys) === null || _b === void 0 ? void 0 : _b.includes(property))
-                    ymap.set(property, stringToYText(value));
-                else
-                    ymap.set(property, value);
+const objectToYMap = (object, { atomicKeys = [], disableYText = false, yTextKeys = [], } = {}) => {
+    const options = { atomicKeys, disableYText, yTextKeys };
+    const ymap = new yjs.Map();
+    for (const [key, value] of Object.entries(object)) {
+        if (typeof value === "function") {
+            continue;
+        }
+        if (typeof value === "string") {
+            const isWantsYText = options.disableYText
+                ? options.yTextKeys.includes(key)
+                : !options.atomicKeys.includes(key);
+            if (isWantsYText) {
+                ymap.set(key, stringToYText(value));
             }
             else {
-                if ((_c = options === null || options === void 0 ? void 0 : options.atomicKeys) === null || _c === void 0 ? void 0 : _c.includes(property))
-                    ymap.set(property, value);
-                else
-                    ymap.set(property, stringToYText(value));
+                ymap.set(key, value);
             }
         }
-        else if (typeof value !== "function")
-            ymap.set(property, value);
-    });
+        else if (Array.isArray(value)) {
+            ymap.set(key, arrayToYArray(value, options));
+        }
+        else if (isObject(value)) {
+            ymap.set(key, objectToYMap(value, options));
+        }
+        else {
+            ymap.set(key, value);
+        }
+    }
     return ymap;
 };
-var stringToYText = function (string) {
-    return new Y.Text(string);
-};
 
-var patchSharedType = function (sharedType, newState, options) {
-    var sharedTypeJson = typeof sharedType.toJSON === "function" ? sharedType.toJSON() : sharedType.toString();
-    var changes = getChanges(sharedTypeJson, newState);
-    changes.forEach(function (_a) {
-        var _b, _c, _d, _e, _f, _g;
-        var type = _a[0], property = _a[1], value = _a[2];
+const patchSharedType = (sharedType, newState, { atomicKeys = [], disableYText = false, previousState, yTextKeys = [], } = {}) => {
+    const options = { atomicKeys, disableYText, previousState, yTextKeys };
+    const sharedTypeJson = typeof sharedType.toJSON === "function"
+        ? sharedType.toJSON()
+        : sharedType.toString();
+    const changes = getChanges(sharedTypeJson, newState);
+    for (const [type, property, value] of changes) {
         switch (type) {
-            case ChangeType.INSERT:
-            case ChangeType.UPDATE:
-                if ((value instanceof Function) === false) {
-                    if (sharedType instanceof Y.Map) {
+            case changeType.insert:
+            case changeType.update: {
+                if (!(value instanceof Function)) {
+                    if (sharedType instanceof yjs.Map) {
+                        const prop = property;
                         if (typeof value === "string") {
-                            if (options === null || options === void 0 ? void 0 : options.disableYText) {
-                                if ((_b = options.yTextKeys) === null || _b === void 0 ? void 0 : _b.includes(property))
-                                    sharedType.set(property, stringToYText(value));
-                                else
-                                    sharedType.set(property, value);
+                            const isWantsYText = options.disableYText
+                                ? options.yTextKeys.includes(prop)
+                                : !options.atomicKeys.includes(prop);
+                            if (isWantsYText) {
+                                sharedType.set(prop, stringToYText(value));
                             }
                             else {
-                                if ((_c = options === null || options === void 0 ? void 0 : options.atomicKeys) === null || _c === void 0 ? void 0 : _c.includes(property))
-                                    sharedType.set(property, value);
-                                else
-                                    sharedType.set(property, stringToYText(value));
+                                sharedType.set(prop, value);
                             }
                         }
-                        else if (Array.isArray(value))
-                            sharedType.set(property, arrayToYArray(value, options));
-                        else if (typeof value === "object" && value !== null)
-                            sharedType.set(property, objectToYMap(value, options));
-                        else
-                            sharedType.set(property, value);
-                    }
-                    else if (sharedType instanceof Y.Array) {
-                        var index = property;
-                        if (type === ChangeType.UPDATE)
-                            sharedType.delete(index);
-                        if (typeof value === "string") {
-                            if (options === null || options === void 0 ? void 0 : options.disableYText)
-                                sharedType.insert(index, [value]);
-                            else
-                                sharedType.insert(index, [stringToYText(value)]);
+                        else if (Array.isArray(value)) {
+                            sharedType.set(prop, arrayToYArray(value, options));
                         }
-                        else if (Array.isArray(value))
-                            sharedType.insert(index, [arrayToYArray(value, options)]);
-                        else if (typeof value === "object" && value !== null)
-                            sharedType.insert(index, [objectToYMap(value, options)]);
-                        else
-                            sharedType.insert(index, [value]);
+                        else if (typeof value === "object" && value !== null) {
+                            sharedType.set(prop, objectToYMap(value, options));
+                        }
+                        else {
+                            sharedType.set(prop, value);
+                        }
                     }
-                    else if (sharedType instanceof Y.Text)
+                    else if (sharedType instanceof yjs.Array) {
+                        const index = property;
+                        if (type === changeType.update) {
+                            sharedType.delete(index);
+                        }
+                        if (typeof value === "string") {
+                            if (options.disableYText) {
+                                sharedType.insert(index, [value]);
+                            }
+                            else {
+                                sharedType.insert(index, [stringToYText(value)]);
+                            }
+                        }
+                        else if (Array.isArray(value)) {
+                            sharedType.insert(index, [arrayToYArray(value, options)]);
+                        }
+                        else if (typeof value === "object" && value !== null) {
+                            sharedType.insert(index, [objectToYMap(value, options)]);
+                        }
+                        else {
+                            sharedType.insert(index, [value]);
+                        }
+                    }
+                    else if (sharedType instanceof yjs.Text) {
                         sharedType.insert(property, value);
+                    }
                 }
                 break;
-            case ChangeType.DELETE:
-                {
-                    var prev = options === null || options === void 0 ? void 0 : options.previousState;
-                    if (prev && typeof prev === "object" && !(property in prev))
-                        return;
+            }
+            case changeType.delete: {
+                const prev = options.previousState;
+                if (prev && typeof prev === "object" && !(property in prev)) {
+                    continue;
                 }
-                if (sharedType instanceof Y.Map)
+                if (sharedType instanceof yjs.Map) {
                     sharedType.delete(property);
-                else if (sharedType instanceof Y.Array) {
-                    var index = property;
+                }
+                else if (sharedType instanceof yjs.Array) {
+                    const index = property;
                     sharedType.delete(sharedType.length <= index
                         ? sharedType.length - 1
                         : index);
                 }
-                else if (sharedType instanceof Y.Text)
+                else if (sharedType instanceof yjs.Text) {
                     sharedType.delete(property, 1);
+                }
                 break;
-            case ChangeType.PENDING:
-                {
-                    var childPreviousState = void 0;
-                    if ((options === null || options === void 0 ? void 0 : options.previousState) && typeof options.previousState === "object")
-                        childPreviousState = options.previousState[property];
-                    if (sharedType instanceof Y.Map) {
-                        var existing = sharedType.get(property);
-                        var newValue = newState[property];
-                        var isTextMappingMismatch = false;
-                        if (typeof newValue === "string") {
-                            var wantsYText = (options === null || options === void 0 ? void 0 : options.disableYText)
-                                ? (_d = options.yTextKeys) === null || _d === void 0 ? void 0 : _d.includes(property)
-                                : !((_e = options === null || options === void 0 ? void 0 : options.atomicKeys) === null || _e === void 0 ? void 0 : _e.includes(property));
-                            if (wantsYText && !(existing instanceof Y.Text))
-                                isTextMappingMismatch = true;
-                            else if (!wantsYText && (existing instanceof Y.Text))
-                                isTextMappingMismatch = true;
-                        }
-                        if (isTextMappingMismatch) {
-                            var wantsYText = (options === null || options === void 0 ? void 0 : options.disableYText)
-                                ? (_f = options.yTextKeys) === null || _f === void 0 ? void 0 : _f.includes(property)
-                                : !((_g = options === null || options === void 0 ? void 0 : options.atomicKeys) === null || _g === void 0 ? void 0 : _g.includes(property));
-                            if (wantsYText)
-                                sharedType.set(property, stringToYText(newValue));
-                            else
-                                sharedType.set(property, newValue);
-                        }
-                        else {
-                            if (typeof newValue === "string" && !(existing instanceof Y.Text)) {
-                                sharedType.set(property, newValue);
-                            }
-                            else {
-                                patchSharedType(existing, newValue, __assign(__assign({}, options), { previousState: childPreviousState }));
-                            }
+            }
+            case changeType.pending: {
+                let childPreviousState;
+                if (options.previousState && typeof options.previousState === "object") {
+                    childPreviousState = options.previousState[property];
+                }
+                if (sharedType instanceof yjs.Map) {
+                    const prop = property;
+                    const existing = sharedType.get(prop);
+                    const newValue = newState[prop];
+                    let isTextMappingMismatch = false;
+                    if (typeof newValue === "string") {
+                        const isWantsYText = options.disableYText
+                            ? options.yTextKeys.includes(prop)
+                            : !options.atomicKeys.includes(prop);
+                        if ((isWantsYText && !(existing instanceof yjs.Text)) || (!isWantsYText && (existing instanceof yjs.Text))) {
+                            isTextMappingMismatch = true;
                         }
                     }
-                    else if (sharedType instanceof Y.Array) {
-                        var existing = sharedType.get(property);
-                        var newValue = newState[property];
-                        var isTextMappingMismatch = false;
-                        if (typeof newValue === "string") {
-                            var wantsYText = !(options === null || options === void 0 ? void 0 : options.disableYText);
-                            if (wantsYText && !(existing instanceof Y.Text))
-                                isTextMappingMismatch = true;
-                            else if (!wantsYText && (existing instanceof Y.Text))
-                                isTextMappingMismatch = true;
-                        }
-                        if (isTextMappingMismatch) {
-                            sharedType.delete(property);
-                            var wantsYText = !(options === null || options === void 0 ? void 0 : options.disableYText);
-                            if (wantsYText)
-                                sharedType.insert(property, [stringToYText(newValue)]);
-                            else
-                                sharedType.insert(property, [newValue]);
+                    if (isTextMappingMismatch) {
+                        const isWantsYText = options.disableYText
+                            ? options.yTextKeys.includes(prop)
+                            : !options.atomicKeys.includes(prop);
+                        if (isWantsYText) {
+                            sharedType.set(prop, stringToYText(newValue));
                         }
                         else {
-                            if (typeof newValue === "string" && !(existing instanceof Y.Text)) {
-                                sharedType.delete(property);
-                                sharedType.insert(property, [newValue]);
-                            }
-                            else {
-                                patchSharedType(existing, newValue, __assign(__assign({}, options), { previousState: childPreviousState }));
-                            }
+                            sharedType.set(prop, newValue);
+                        }
+                    }
+                    else {
+                        if (typeof newValue === "string" && !(existing instanceof yjs.Text)) {
+                            sharedType.set(prop, newValue);
+                        }
+                        else {
+                            patchSharedType(existing, newValue, { ...options, previousState: childPreviousState });
+                        }
+                    }
+                }
+                else if (sharedType instanceof yjs.Array) {
+                    const index = property;
+                    const existing = sharedType.get(index);
+                    const newValue = newState[index];
+                    let isTextMappingMismatch = false;
+                    if (typeof newValue === "string") {
+                        const isWantsYText = !options.disableYText;
+                        if ((isWantsYText && !(existing instanceof yjs.Text)) || (!isWantsYText && (existing instanceof yjs.Text))) {
+                            isTextMappingMismatch = true;
+                        }
+                    }
+                    if (isTextMappingMismatch) {
+                        sharedType.delete(index);
+                        const isWantsYText = !options.disableYText;
+                        if (isWantsYText) {
+                            sharedType.insert(index, [stringToYText(newValue)]);
+                        }
+                        else {
+                            sharedType.insert(index, [newValue]);
+                        }
+                    }
+                    else {
+                        if (typeof newValue === "string" && !(existing instanceof yjs.Text)) {
+                            sharedType.delete(index);
+                            sharedType.insert(index, [newValue]);
+                        }
+                        else {
+                            patchSharedType(existing, newValue, { ...options, previousState: childPreviousState });
                         }
                     }
                 }
                 break;
+            }
         }
-    });
+    }
 };
-var patchState = function (oldState, newState) {
-    var changes = getChanges(oldState, newState);
-    var applyChanges = function (state, changes) {
-        if (typeof state === "string")
-            return applyChangesToString(state, changes);
-        else if (Array.isArray(state))
-            return applyChangesToArray(state, changes);
-        else if (typeof state === "object" && state !== null)
-            return applyChangesToObject(state, changes);
-    };
-    var applyChangesToArray = function (array, changes) {
-        var revisedArray = __spreadArray([], array, true);
-        var deletes = changes
-            .filter(function (_a) {
-            var type = _a[0];
-            return type === ChangeType.DELETE;
-        })
-            .sort(function (_a, _b) {
-            var indexA = _a[1];
-            var indexB = _b[1];
-            return Math.sign(indexB - indexA);
-        });
-        var others = changes
-            .filter(function (_a) {
-            var type = _a[0];
-            return type !== ChangeType.DELETE;
-        })
-            .sort(function (_a, _b) {
-            var indexA = _a[1];
-            var indexB = _b[1];
-            return Math.sign(indexA - indexB);
-        });
-        deletes.forEach(function (_a) {
-            var index = _a[1];
-            revisedArray.splice(index, 1);
-        });
-        return others.reduce(function (currentArray, _a) {
-            var type = _a[0], index = _a[1], value = _a[2];
-            switch (type) {
-                case ChangeType.INSERT:
-                    {
-                        currentArray.splice(index, 0, value);
-                        return currentArray;
-                    }
-                case ChangeType.UPDATE:
-                    {
-                        currentArray[index] = value;
-                        return currentArray;
-                    }
-                case ChangeType.PENDING:
-                    {
-                        currentArray[index] =
-                            applyChanges(currentArray[index], value);
-                        return currentArray;
-                    }
-                case ChangeType.NONE:
-                default:
-                    return currentArray;
+const applyChangesToString = (initialString, stringChanges) => {
+    let revisedString = initialString;
+    for (const [type, index, value] of stringChanges) {
+        switch (type) {
+            case changeType.insert: {
+                const idx = index;
+                const left = revisedString.slice(0, idx);
+                const right = revisedString.slice(idx);
+                revisedString = left + value + right;
+                break;
             }
-        }, revisedArray);
-    };
-    var applyChangesToObject = function (object, changes) {
-        return changes
-            .reduce(function (revisedObject, _a) {
-            var type = _a[0], property = _a[1], value = _a[2];
-            switch (type) {
-                case ChangeType.INSERT:
-                case ChangeType.UPDATE:
-                    {
-                        revisedObject[property] = value;
-                        return revisedObject;
-                    }
-                case ChangeType.PENDING:
-                    {
-                        revisedObject[property] = applyChanges(revisedObject[property], value);
-                        return revisedObject;
-                    }
-                case ChangeType.DELETE:
-                    {
-                        delete revisedObject[property];
-                        return revisedObject;
-                    }
-                case ChangeType.NONE:
-                default:
-                    return revisedObject;
+            case changeType.delete: {
+                const idx = index;
+                const left = revisedString.slice(0, idx);
+                const right = revisedString.slice(idx + 1);
+                revisedString = left + right;
+                break;
             }
-        }, __assign({}, object));
-    };
-    var applyChangesToString = function (string, changes) {
-        return changes
-            .reduce(function (revisedString, _a) {
-            var type = _a[0], index = _a[1], value = _a[2];
-            switch (type) {
-                case ChangeType.INSERT:
-                    {
-                        var left = revisedString.slice(0, index);
-                        var right = revisedString.slice(index);
-                        return left + value + right;
-                    }
-                case ChangeType.DELETE:
-                    {
-                        var left = revisedString.slice(0, index);
-                        var right = revisedString.slice(index + 1);
-                        return left + right;
-                    }
-                default:
-                    {
-                        return revisedString;
-                    }
+        }
+    }
+    return revisedString;
+};
+const applyChangesToArray = (initialArray, arrayChanges) => {
+    const revisedArray = [...initialArray];
+    const deletions = [...arrayChanges]
+        .filter(([type]) => type === changeType.delete)
+        .sort(([, indexA], [, indexB]) => indexB - indexA);
+    for (const [, index] of deletions) {
+        revisedArray.splice(index, 1);
+    }
+    const others = [...arrayChanges]
+        .filter(([type]) => type !== changeType.delete)
+        .sort(([, indexA], [, indexB]) => indexA - indexB);
+    for (const [type, index, value] of others) {
+        const idx = index;
+        switch (type) {
+            case changeType.insert: {
+                revisedArray.splice(idx, 0, value);
+                break;
             }
-        }, string);
-    };
-    if (changes.length === 0)
+            case changeType.update: {
+                revisedArray[idx] = value;
+                break;
+            }
+            case changeType.pending: {
+                revisedArray[idx] = applyChanges(revisedArray[idx], value);
+                break;
+            }
+        }
+    }
+    return revisedArray;
+};
+const applyChangesToObject = (initialObject, objectChanges) => {
+    let revisedObject = { ...initialObject };
+    for (const [type, property, value] of objectChanges) {
+        const prop = property;
+        switch (type) {
+            case changeType.insert:
+            case changeType.update: {
+                revisedObject[prop] = value;
+                break;
+            }
+            case changeType.pending: {
+                revisedObject[prop] = applyChanges(revisedObject[prop], value);
+                break;
+            }
+            case changeType.delete: {
+                revisedObject = Object.fromEntries(Object.entries(revisedObject).filter(([p]) => p !== prop));
+                break;
+            }
+        }
+    }
+    return revisedObject;
+};
+const applyChanges = (state, changes) => {
+    if (typeof state === "string") {
+        return applyChangesToString(state, changes);
+    }
+    if (Array.isArray(state)) {
+        return applyChangesToArray(state, changes);
+    }
+    return applyChangesToObject(state, changes);
+};
+const patchState = (oldState, newState) => {
+    const changes = getChanges(oldState, newState);
+    if (changes.length === 0) {
         return oldState;
-    else
-        return applyChanges(oldState, changes);
+    }
+    return applyChanges(oldState, changes);
 };
-var patchStore = function (store, newState) {
-    var oldState = __assign({}, store.getState());
+const patchStore = (store, newState) => {
+    const oldState = {
+        ...store.getState(),
+    };
     store.setState(patchState(oldState, newState), true);
 };
 
-var yjs = function (doc, name, config, options) {
-    var map = doc.getMap(name);
-    var isObsolete = false;
-    return function (set, get, api) {
-        var _a;
-        var loaded = false;
+const yjsImpl = (doc, name, config, { atomicKeys, disableYText, onLoaded, onObsolete, schemaVersion, yTextKeys, } = {}) => {
+    const map = doc.getMap(name);
+    const middlewareOptions = {
+        atomicKeys,
+        disableYText,
+        onLoaded,
+        onObsolete,
+        schemaVersion,
+        yTextKeys,
+    };
+    let isObsolete = false;
+    return (set, get, api) => {
+        let isLoaded = false;
         if (map.size > 0) {
-            loaded = true;
-            (_a = options === null || options === void 0 ? void 0 : options.onLoaded) === null || _a === void 0 ? void 0 : _a.call(options);
+            isLoaded = true;
+            onLoaded?.();
         }
-        var isOutboundPending = false;
-        var batchPreviousState;
-        var originalSetState = api.setState;
-        var flushOutbound = function () {
+        let isOutboundPending = false;
+        let batchPreviousState;
+        const originalSetState = api.setState;
+        const flushOutbound = () => {
             isOutboundPending = false;
-            var previousState = batchPreviousState;
+            const previousState = batchPreviousState;
             batchPreviousState = undefined;
-            doc.transact(function () {
-                return patchSharedType(map, api.getState(), __assign(__assign({}, options), { previousState: previousState }));
+            doc.transact(() => {
+                patchSharedType(map, api.getState(), { ...middlewareOptions, previousState });
             }, api);
         };
-        var scheduleOutbound = function (capturedPreviousState) {
-            if (isObsolete)
+        const scheduleOutbound = (capturedPreviousState) => {
+            if (isObsolete) {
                 return;
+            }
             if (!isOutboundPending) {
                 isOutboundPending = true;
                 batchPreviousState = capturedPreviousState;
                 queueMicrotask(flushOutbound);
             }
         };
-        var initialState = config(function (partial, replace) {
-            var previousState = get();
+        let initialState = config((partial, replace) => {
+            const previousState = get();
             set(partial, replace);
             scheduleOutbound(previousState);
         }, get, api);
@@ -665,34 +595,38 @@ var yjs = function (doc, name, config, options) {
             initialState = patchState(initialState, map.toJSON());
             api.setState(initialState, true);
         }
-        api.setState = function (partial, replace) {
-            var previousState = api.getState();
+        api.setState = (partial, replace) => {
+            const previousState = api.getState();
             originalSetState(partial, replace);
             scheduleOutbound(previousState);
         };
-        var isUpdatePending = false;
-        var processBatch = function () {
+        let isUpdatePending = false;
+        const processBatch = () => {
             isUpdatePending = false;
-            patchStore(__assign(__assign({}, api), { "setState": originalSetState }), map.toJSON());
+            patchStore({
+                ...api,
+                "setState": originalSetState,
+            }, map.toJSON());
         };
-        map.observeDeep(function (_, transaction) {
-            var _a, _b;
-            if (isObsolete)
+        map.observeDeep((unusedArg, transaction) => {
+            if (isObsolete) {
                 return;
-            if ((options === null || options === void 0 ? void 0 : options.schemaVersion) !== undefined) {
-                var incomingVersion = map.get('__schemaVersion') || 0;
-                if (incomingVersion > options.schemaVersion) {
+            }
+            if (schemaVersion !== undefined) {
+                const incomingVersion = map.get("__schemaVersion") || 0;
+                if (incomingVersion > schemaVersion) {
                     isObsolete = true;
-                    (_a = options.onObsolete) === null || _a === void 0 ? void 0 : _a.call(options, incomingVersion);
+                    onObsolete?.(incomingVersion);
                     return;
                 }
             }
-            if (!loaded && transaction.origin !== api) {
-                loaded = true;
-                (_b = options === null || options === void 0 ? void 0 : options.onLoaded) === null || _b === void 0 ? void 0 : _b.call(options);
+            if (!isLoaded && transaction.origin !== api) {
+                isLoaded = true;
+                onLoaded?.();
             }
-            if (transaction.origin === api)
+            if (transaction.origin === api) {
                 return;
+            }
             if (!isUpdatePending) {
                 isUpdatePending = true;
                 queueMicrotask(processBatch);
@@ -702,4 +636,4 @@ var yjs = function (doc, name, config, options) {
     };
 };
 
-export default yjs;
+export default yjsImpl;

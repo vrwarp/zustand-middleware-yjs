@@ -1,12 +1,13 @@
-export declare enum ChangeType {
-    NONE = "none",
-    INSERT = "insert",
-    UPDATE = "update",
-    DELETE = "delete",
-    PENDING = "pending"
-}
+export declare const changeType: {
+    readonly none: "none";
+    readonly insert: "insert";
+    readonly update: "update";
+    readonly delete: "delete";
+    readonly pending: "pending";
+};
+export type ChangeType = (typeof changeType)[keyof typeof changeType];
 export type Change = [
-    ChangeType,
-    string | number,
-    any
+    type: ChangeType,
+    property: string | number,
+    value: unknown
 ];

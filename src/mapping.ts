@@ -1,195 +1,190 @@
-import * as Y from "yjs";
+import * as yjs from "yjs";
+import { type Change, changeType } from "./types";
 
 /**
- * Converts a normal JavaScript array to a YArray shared type. Any nested
- * objects or arrays are turned into YMaps and YArrays, respectively.
- *
- * @example <caption>Single-level array to YArray.</caption>
- * arrayToYArray([ 1, 2, 3, 4 ]).get(0) // => 1
- *
- * @example <caption>Nested arrays to nested YArrays.</caption>
- * arrayToYArray([ 1, [ 2, 3 ] ]).get(1).get(0) // => 2
- *
- * @example <caption>Object nested inside array to YMap nested in
- * YArray.</caption>
- * arrayToYArray([ { foo: 1 } ]).get(0).get("foo") // => 1
- *
- * @param array The array to transform into a YArray
- * @returns A YArray.
+ * Options for mapping values to Yjs types.
  */
+export interface MappingOptions {
+  /** Keys that should be stored as primitive strings instead of Y.Text. */
+  atomicKeys?: string[];
+  /** If true, all strings are stored as primitive strings. */
+  disableYText?: boolean;
+  /** Keys that should be stored as Y.Text even if disableYText is true. */
+  yTextKeys?: string[];
+}
 
+const isObject = (value: unknown): value is Record<string, unknown> => {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    !(value instanceof yjs.AbstractType) &&
+    !(value instanceof yjs.Doc)
+  );
+};
+
+/**
+ * Converts a string to a Y.Text object.
+ *
+ * @param value - The string to convert.
+ * @returns A Y.Text object representing the string.
+ */
+export const stringToYText = (value: string): yjs.Text => new yjs.Text(value);
+
+/**
+ * Converts a Y.Text object to a string.
+ *
+ * @param ytext - The Y.Text object to convert.
+ * @returns A string representation of the Y.Text object.
+ */
+// eslint-disable-next-line @typescript-eslint/no-base-to-string
+export const yTextToString = (ytext: yjs.Text): string => ytext.toString();
+
+/**
+ * Converts an array to a Y.Array object.
+ *
+ * @param array - The array to convert.
+ * @param mappingOptions - The mapping options.
+ * @returns A Y.Array object representing the array.
+ */
 export const arrayToYArray = (
-  array: any[],
-  options?: { atomicKeys?: string[], disableYText?: boolean, yTextKeys?: string[] }
-): Y.Array<any> =>
-{
-  const yarray = new Y.Array();
-
-  array.forEach((value) =>
+  array: unknown[],
   {
-    if (Array.isArray(value))
-      yarray.push([ arrayToYArray(value, options) ]);
+    atomicKeys = [],
+    disableYText = false,
+    yTextKeys = [],
+  }: MappingOptions = {}
+): yjs.Array<unknown> => {
+  const options = { atomicKeys, disableYText, yTextKeys };
+  const yarray = new yjs.Array<unknown>();
+  const mappedArray: unknown[] = [];
 
-    else if (typeof value === "object" && value !== null)
-      yarray.push([ objectToYMap(value, options) ]);
-
-    else if (typeof value === "string")
-    {
-      if (options?.disableYText)
-        yarray.push([ value ]);
-      else
-        yarray.push([ stringToYText(value) ]);
+  for (const value of array) {
+    if (typeof value === "function") {
+      continue;
     }
+    if (typeof value === "string") {
+      mappedArray.push(options.disableYText ? value : stringToYText(value));
+    } else if (Array.isArray(value)) {
+      mappedArray.push(arrayToYArray(value, options));
+    } else if (isObject(value)) {
+      // eslint-disable-next-line @typescript-eslint/no-use-before-define
+      mappedArray.push(objectToYMap(value, options));
+    } else {
+      mappedArray.push(value);
+    }
+  }
 
-    else if (typeof value !== "function")
-      yarray.push([ value ]);
-  });
+  yarray.insert(0, mappedArray);
 
   return yarray;
 };
 
 /**
- * Converts a YArray to a normal JavaScript array. Any shared types in the
- * array are converted to their traditional types (i.e. YMaps are converted to
- * objects; YArrays are converted to arrays).
+ * Converts a YArray to a normal JavaScript array.
  *
- * @example <caption>Single-level YArray to array.</caption>
- * const yarray = (new Y.Doc()).getArray("array");
- * yarray.push([ 1, 2, 3, 4 ]);
- *
- * yArrayToArray(yarray) // => [ 1, 2, 3, 4 ]
- *
- * @example <caption>Nested YArrays to nested arrays.</caption>
- * const ydoc = new Y.Doc();
- *
- * const yarray1 = ydoc.getArray("array");
- * const yarray2 = new Y.Array();
- *
- * yarray2.push([ 2, 3 ])
- * yarray1.push([ 1, yarray2, 4 ]);
- *
- * yArrayToArray(yarray1) // => [ 1, [ 2, 3 ], 4 ]
- *
- * @example <caption>Nested YMaps in YArrays are converted to objects
- * nested in arrays.</caption>
- * const ydoc = new Y.Doc();
- *
- * const yarray = ydoc.getArray("array");
- * const ymap = new Y.Map();
- *
- * ymap.set("foo", 1)
- * yarray.push([ ymap ]);
- *
- * yArrayToArray(yarray) // => [ { foo: 1 } ]
- *
- * @param yarray The YArray to convert to a plain array.
+ * @param yarray - The YArray to convert.
  * @returns A plain JavaScript array.
  */
-
-export const yArrayToArray = (yarray: Y.Array<any>): any[] =>
-  yarray.toJSON();
+export const yArrayToArray = (yarray: yjs.Array<unknown>): unknown[] => {
+  return yarray.toJSON() as unknown[];
+};
 
 /**
- * Converts a normal JavaScript object into a YMap shared type. Any nested
- * objects or arrays are turned into YMaps or YArrays, respectively.
+ * Converts an object to a Y.Map object.
  *
- * @example <caption>Single-level object to YMap.</caption>
- * objectToYMap({ foo: 1, bar: 2 }).get("foo") // => 1
- *
- * @example <caption>Nested objects to nested YMaps.</caption>
- * objectToYMap({ foo: { bar: 1 } }).get("foo").get("bar") // => 1
- *
- * @example <caption>Nested arrays in objects to nested YArrays in YMaps.
- * </caption>
- * objectToYMap({ foo: [ 1, 2 ] }).get("foo").get(1) // => 2
- *
- * @param object The object to turn into a YMap shared type.
- * @returns A YMap.
+ * @param object - The object to convert.
+ * @param mappingOptions - The mapping options.
+ * @returns A Y.Map object representing the object.
  */
-
 export const objectToYMap = (
-  object: Record<string, any>,
-  options?: { atomicKeys?: string[], disableYText?: boolean, yTextKeys?: string[] }
-): Y.Map<any> =>
-{
-  const ymap = new Y.Map();
-
-  Object.entries(object).forEach(([ property, value ]) =>
+  object: Record<string, unknown>,
   {
-    if (Array.isArray(value))
-      ymap.set(property, arrayToYArray(value, options));
+    atomicKeys = [],
+    disableYText = false,
+    yTextKeys = [],
+  }: MappingOptions = {}
+): yjs.Map<unknown> => {
+  const options = { atomicKeys, disableYText, yTextKeys };
+  const ymap = new yjs.Map<unknown>();
 
-    else if (typeof value === "object" && value !== null)
-      ymap.set(property, objectToYMap(value, options));
-
-    else if (typeof value === "string")
-    {
-      if (options?.disableYText)
-      {
-        if (options.yTextKeys?.includes(property))
-          ymap.set(property, stringToYText(value));
-        else
-          ymap.set(property, value);
-      }
-      else
-      {
-        if (options?.atomicKeys?.includes(property))
-          ymap.set(property, value);
-        else
-          ymap.set(property, stringToYText(value));
-      }
+  for (const [key, value] of Object.entries(object)) {
+    if (typeof value === "function") {
+      continue;
     }
+    if (typeof value === "string") {
+      const isWantsYText = options.disableYText
+        ? options.yTextKeys.includes(key)
+        : !options.atomicKeys.includes(key);
 
-    else if (typeof value !== "function")
-      ymap.set(property, value);
-  });
+      if (isWantsYText) {
+        ymap.set(key, stringToYText(value));
+      } else {
+        ymap.set(key, value);
+      }
+    } else if (Array.isArray(value)) {
+      ymap.set(key, arrayToYArray(value, options));
+    } else if (isObject(value)) {
+      ymap.set(key, objectToYMap(value, options));
+    } else {
+      ymap.set(key, value);
+    }
+  }
 
   return ymap;
 };
 
 /**
- * Converts a YMap to a normal JavaScript object. Any nested shared types are
- * converted to their JavaScript equivalents (i.e YMaps are converted to
- * objects; YArrays are converted to arrays).
+ * Converts a YMap to a normal JavaScript object.
  *
- * @example <caption>Single-level object to YMap.</caption>
- * const ymap = (new Y.Doc()).getMap("map");
- * ymap.set("foo", 1);
- *
- * yMapToObject(ymap) // => { foo: 1 }
- *
- * @example <caption>Nested objects to nested YMaps.</caption>
- * const ydoc = new Y.Doc();
- *
- * const ymap1 = ydoc.getMap("map");
- * const ymap2 = new Y.Map();
- *
- * ymap2.set("bar", 1)
- * ymap1.push("foo", ymap2);
- *
- * yMapToObject(ymap1) // => { foo: { bar: 1 } }
- *
- * @example <caption>Nested arrays in objects are converted to YArrays nested
- * in YMaps.</caption>
- * const ydoc = new Y.Doc();
- *
- * const ymap = ydoc.getMap("map");
- * const yarray = new Y.Array();
- *
- * yarray.push([ 1, 2 ]);
- * ymap.set("foo", yarray)
- *
- * yArrayToArray(yarray) // => { foo: [ 1, 2 ] }
- *
- * @param ymap YMap to convert to a plain JavaScript object.
+ * @param ymap - The YMap to convert.
  * @returns A plain JavaScript object.
  */
+export const yMapToObject = (ymap: yjs.Map<unknown>): Record<string, unknown> => {
+  return ymap.toJSON() as Record<string, unknown>;
+};
 
-export const yMapToObject = (ymap: Y.Map<any>): any =>
-  ymap.toJSON();
+/**
+ * Converts a Yjs shared type to its JSON representation as a list of changes.
+ *
+ * @param ytype - The Yjs shared type to convert.
+ * @returns A list of changes representing the Yjs shared type's contents.
+ */
+export const yTypeToChanges = (
+  ytype: yjs.Map<unknown> | yjs.Array<unknown> | yjs.Text
+): Change[] => {
+  if (ytype instanceof yjs.Text) {
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string
+    return [[changeType.insert, 0, ytype.toString()]];
+  }
 
-export const yTextToString = (ytext: Y.Text): string =>
-  ytext.toString();
+  if (ytype instanceof yjs.Array) {
+    return ytype.map((value, index) => {
+      if (
+        value instanceof yjs.Map ||
+        value instanceof yjs.Array ||
+        value instanceof yjs.Text
+      ) {
+        return [changeType.pending, index, yTypeToChanges(value)];
+      }
 
-export const stringToYText = (string: string): Y.Text =>
-  new Y.Text(string);
+      return [changeType.insert, index, value];
+    });
+  }
+
+  const entries = Object.entries(ytype.toJSON() as Record<string, unknown>);
+
+  return entries.map(([key, value]) => {
+    const yValue = ytype.get(key);
+
+    if (
+      yValue instanceof yjs.Map ||
+      yValue instanceof yjs.Array ||
+      yValue instanceof yjs.Text
+    ) {
+      return [changeType.pending, key, yTypeToChanges(yValue)];
+    }
+
+    return [changeType.insert, key, value];
+  });
+};

@@ -1,5 +1,5 @@
 
-import { ChangeType } from "./types";
+import { changeType } from "./types";
 import { getChanges } from "./diff";
 
 describe("Windowed Lookahead Reproduction", () => {
@@ -19,9 +19,9 @@ describe("Windowed Lookahead Reproduction", () => {
         // We expect exactly 5 deletes.
         // Current algorithm will likely produce 95 updates + deletes/inserts
 
-        const deleteCount = changes.filter(c => c[0] === ChangeType.DELETE).length;
-        const updateCount = changes.filter(c => c[0] === ChangeType.UPDATE).length;
-        const insertCount = changes.filter(c => c[0] === ChangeType.INSERT).length;
+        const deleteCount = changes.filter(c => c[0] === changeType.delete).length;
+        const updateCount = changes.filter(c => c[0] === changeType.update).length;
+        const insertCount = changes.filter(c => c[0] === changeType.insert).length;
 
         console.log(`Changes: ${changes.length} (Deletes: ${deleteCount}, Updates: ${updateCount}, Inserts: ${insertCount})`);
 
@@ -33,7 +33,7 @@ describe("Windowed Lookahead Reproduction", () => {
         // Precise check: For sequential patching, we expect "Delete at 0" repeatedly.
         // Or "Delete at index" where index is constant for the block.
         changes.forEach((change) => {
-            expect(change[0]).toBe(ChangeType.DELETE);
+            expect(change[0]).toBe(changeType.delete);
             expect(change[1]).toBe(0); // All deletes should target the head (current index)
         });
     });
@@ -51,9 +51,9 @@ describe("Windowed Lookahead Reproduction", () => {
 
         const changes = getChanges(a, b);
 
-        const deleteCount = changes.filter(c => c[0] === ChangeType.DELETE).length;
-        const updateCount = changes.filter(c => c[0] === ChangeType.UPDATE).length;
-        const insertCount = changes.filter(c => c[0] === ChangeType.INSERT).length;
+        const deleteCount = changes.filter(c => c[0] === changeType.delete).length;
+        const updateCount = changes.filter(c => c[0] === changeType.update).length;
+        const insertCount = changes.filter(c => c[0] === changeType.insert).length;
 
         console.log(`Changes: ${changes.length} (Deletes: ${deleteCount}, Updates: ${updateCount}, Inserts: ${insertCount})`);
 
@@ -64,7 +64,7 @@ describe("Windowed Lookahead Reproduction", () => {
 
         // precise check
         for (let i = 0; i < 5; i++) {
-            expect(changes[i][0]).toBe(ChangeType.INSERT);
+            expect(changes[i][0]).toBe(changeType.insert);
             expect(changes[i][1]).toBe(i);
             expect(changes[i][2]).toBe(`Log${i + 1}`);
         }

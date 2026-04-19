@@ -2,7 +2,7 @@ import { createStore as createVanilla, } from "zustand/vanilla";
 import * as Y from "yjs";
 import yjs from ".";
 import { getChanges, } from "./diff";
-import { ChangeType, } from "./types";
+import { changeType, } from "./types";
 import { patchSharedType, } from "./patching";
 import { arrayToYArray, } from "./mapping";
 
@@ -92,7 +92,7 @@ describe("Edge cases from fuzz testing", () => {
       console.log("Changes:", changes);
 
       expect(changes).toEqual([
-        [ChangeType.UPDATE, 1, "b>Jz0"]
+        [changeType.update, 1, "b>Jz0"]
       ]);
     }
   );

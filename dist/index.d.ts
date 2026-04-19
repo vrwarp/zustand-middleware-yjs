@@ -1,6 +1,6 @@
-import { StateCreator, StoreMutatorIdentifier } from "zustand";
-import * as Y from "yjs";
-type Yjs = <T, Mps extends [StoreMutatorIdentifier, unknown][] = [], Mcs extends [StoreMutatorIdentifier, unknown][] = []>(doc: Y.Doc, name: string, f: StateCreator<T, Mps, Mcs>, options?: YjsOptions) => StateCreator<T, Mps, Mcs>;
+import type * as yjs from "yjs";
+import type { StateCreator, StoreMutatorIdentifier } from "zustand";
+type Yjs = <T, Mps extends [StoreMutatorIdentifier, unknown][] = [], Mcs extends [StoreMutatorIdentifier, unknown][] = []>(doc: yjs.Doc, name: string, f: StateCreator<T, Mps, Mcs>, options?: YjsOptions) => StateCreator<T, Mps, Mcs>;
 export interface YjsOptions {
     atomicKeys?: string[];
     disableYText?: boolean;

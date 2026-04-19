@@ -1,25 +1,29 @@
 /**
- * Describes the change that needs to be made.
+ * Represents the types of changes that can be made to a piece of data.
  */
-export enum ChangeType
-{
-  /** No change. */
-  NONE = "none",
-  /** A value was inserted. */
-  INSERT = "insert",
-  /** A value was replaced. */
-  UPDATE = "update",
-  /** A value was deleted. */
-  DELETE = "delete",
-  /** The value requires a recursive diff to identify further changes. */
-  PENDING = "pending"
-}
+export const changeType = {
+  none: "none",
+  insert: "insert",
+  update: "update",
+  delete: "delete",
+  pending: "pending",
+} as const;
 
 /**
- * A record that documents a change to an entry in an array or object.
+ * The literal values of the change types.
+ */
+export type ChangeType = (typeof changeType)[keyof typeof changeType];
+
+/**
+ * Represents a single change made to a piece of data.
+ *
+ * A change is a tuple containing:
+ * 1. The type of change (ChangeType).
+ * 2. The property name or index where the change occurred.
+ * 3. The new value at that property (if applicable).
  */
 export type Change = [
-  ChangeType,
-  string | number,
-  any
+  type: ChangeType,
+  property: string | number,
+  value: unknown,
 ];
