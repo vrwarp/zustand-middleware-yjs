@@ -177,39 +177,10 @@ describe("Outbound Microtask Batching", () => {
     });
 
     it("Uses the state from the FIRST update in the batch as previousState for the merge", async () => {
-        // This test confirms that batchPreviousState is locked in at the first set call.
-        // We'll mock the internal patchSharedType or infer it from behavior.
-        // Since we can't easily mock internal modules here without complex setup,
-        // we'll rely on the fact that if previousState was incorrect (e.g. from the last update),
-        // the diffing logic might behave differently in a three-way merge scenario.
-        // But actually, we can verify this by checking that the 'pending' logic works
-        // for a concurrent deletion if we simulate one.
-
-        // Actually, simplest way: reuse the logic from concurrency tests but with MULTIPLE local updates.
-        // 1. Initial: { A: 1 }
-        // 2. Remote: { B: 2 } (arrives but not yet synced to Zustand store triggers)
-        // 3. Local: updates A->2, then A->3 (two updates)
-        // If previousState is {A:1} (from start), B is preserved.
-        // If previousState is {A:2} (from middle), B might be lost if logic was flawed?
-        // Actually, Three-Way merge relies on: keys NOT in previousState are preserved.
-        // If previousState was {A:2} (middle), B is NOT in it, so B is preserved regardless.
-        // Wait, if B is in the remote map (items: {A:1, B:2}), and previousState is {A:1}, B is not in previous -> preserved.
-        // If previousState is {A:2}, B is not in previous -> preserved.
-
-        // We need a case where something IS in previousState but NOT in local state (deleted locally).
-        // Suppose we have { A: 1, B: 1 }.
-        // Remote changes A -> 2.
-        // Local deletes B (batch update 1).
-        // Local updates A -> 3 (batch update 2).
-        // If previousState is captured at update 1 ({ A: 1, B: 1 }), then B is in previous, not in current -> Deletion committed.
-        // If previousState was captured at update 2 ({ A: 1, B: undefined }), B is NOT in previous... wait.
-        // If B was deleted in update 1, state at update 2 start is { A: 1 }.
-        // If we used that as previousState ({ A: 1 }), then comparing to final ({ A: 3 }),
-        // we see B is missing in BOTH previous and current. So no delete op generated?
-        // If no delete op generated, B remains in Yjs (ghost/resurrection issue).
-
-        // Correct behavior: B should be deleted from Yjs.
-        // So ensuring previousState is { A: 1, B: 1 } is CRITICAL.
+        // This test confirms that previousState is locked in at the first set call of a batch.
+        // This is critical for correctly detecting deletions that occur within the batch.
+        // If previousState was captured later (e.g., after a deletion), the diffing
+        // logic would fail to see the deletion, leading to "ghost" data in Yjs.
 
         type Store = {
             items: Record<string, number>;
@@ -252,15 +223,8 @@ describe("Outbound Microtask Batching", () => {
         await Promise.resolve();
 
         const finalMap = (map.get("items") as any).toJSON();
-        // If previousState was captured at step 2 ({A:1}), B was already gone from it.
-        // patchSharedType(map={A:1,B:1}, newState={A:2}, prev={A:1})
-        // diff(prev, new) -> A changed. B is missing in both, so no delete change detected?
-        // Result: B stays in Yjs! (Bug)
-
-        // If previousState was captured at step 1 ({A:1,B:1}):
-        // patchSharedType(map={A:1,B:1}, newState={A:2}, prev={A:1,B:1})
-        // diff(prev, new) -> A changed, B deleted.
-        // Result: B deleted from Yjs. (Correct)
+        // If previousState was correctly captured at the start of the batch,
+        // the diff will correctly identify that 'B' was deleted.
 
         expect(finalMap).not.toHaveProperty("B");
         expect(finalMap).toEqual({ "A": 2 });
