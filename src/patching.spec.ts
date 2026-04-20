@@ -696,6 +696,34 @@ describe("patchStore", () =>
     patchStore(store, { "count": 0, });
     expect(store.getState().count).toBe(0);
   });
+
+  describe("Unicode handling", () =>
+  {
+    it.each([
+      [ "", "😀" ],
+      [ "😀", "" ],
+      [ "😀", "😁" ],
+      [ "I love 😀", "I love 😁" ],
+      [ "👨‍👩‍👧‍👦", "👨‍👩‍👦" ]
+    ])("Correctly transforms strings containing emojis: %s -> %s", (a, b) =>
+    {
+      type State = {
+        "text": string,
+      };
+
+      const store = create<State>(() =>
+        ({
+          "text": a,
+        }));
+
+      patchStore(
+        store,
+        { "text": b, }
+      );
+
+      expect(store.getState().text).toBe(b);
+    });
+  });
 });
 
 describe("patchState", () =>
