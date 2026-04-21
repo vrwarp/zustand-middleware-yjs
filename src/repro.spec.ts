@@ -23,7 +23,6 @@ describe("Windowed Lookahead Reproduction", () => {
         const updateCount = changes.filter(c => c[0] === changeType.update).length;
         const insertCount = changes.filter(c => c[0] === changeType.insert).length;
 
-        console.log(`Changes: ${changes.length} (Deletes: ${deleteCount}, Updates: ${updateCount}, Inserts: ${insertCount})`);
 
         expect(updateCount).toBe(0);
         expect(insertCount).toBe(0);
@@ -55,7 +54,6 @@ describe("Windowed Lookahead Reproduction", () => {
         const updateCount = changes.filter(c => c[0] === changeType.update).length;
         const insertCount = changes.filter(c => c[0] === changeType.insert).length;
 
-        console.log(`Changes: ${changes.length} (Deletes: ${deleteCount}, Updates: ${updateCount}, Inserts: ${insertCount})`);
 
         expect(updateCount).toBe(0);
         expect(deleteCount).toBe(0);
