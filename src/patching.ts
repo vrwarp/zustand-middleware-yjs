@@ -290,7 +290,7 @@ const applyChangesToArray = (initialArray: unknown[], arrayChanges: Change[]): u
 };
 
 const applyChangesToObject = (initialObject: Record<string, unknown>, objectChanges: Change[]): Record<string, unknown> => {
-  let revisedObject = { ...initialObject };
+  const revisedObject = { ...initialObject };
 
   for (const [type, property, value] of objectChanges) {
     const prop = property as string;
@@ -306,8 +306,8 @@ const applyChangesToObject = (initialObject: Record<string, unknown>, objectChan
         break;
       }
       case changeType.delete: {
-        // Filter keys to avoid the delete operator
-        revisedObject = Object.fromEntries(Object.entries(revisedObject).filter(([p]) => p !== prop));
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete, no-restricted-syntax/noDeleteOperator
+        delete revisedObject[prop];
         break;
       }
       case changeType.none:
