@@ -204,6 +204,9 @@ export const patchSharedType = (
         break;
       }
 
+      case changeType.update:
+      case changeType.pending:
+      case changeType.delete:
       case changeType.none:
       default: {
         break;
@@ -235,6 +238,7 @@ const applyChangesToString = (initialString: string, stringChanges: Change[]): s
       }
       case changeType.update:
       case changeType.pending:
+      case changeType.delete:
       case changeType.none:
       default: {
         break;
@@ -262,7 +266,7 @@ const applyChangesToArray = (initialArray: unknown[], arrayChanges: Change[]): u
   const others = [...arrayChanges]
     .filter(([type]) => type !== changeType.delete)
     // eslint-disable-next-line unicorn/no-array-sort
-    .sort(([, indexA], [, indexB]) => (indexA as number) - (indexB as number));
+    .sort(([, indexA], [, indexB]) => (indexB as number) - (indexB as number));
 
   for (const [type, index, value] of others) {
     const idx = index as number;
@@ -280,7 +284,9 @@ const applyChangesToArray = (initialArray: unknown[], arrayChanges: Change[]): u
         revisedArray[idx] = applyChanges(revisedArray[idx] as string | unknown[] | Record<string, unknown>, value as Change[]);
         break;
       }
+      case changeType.update:
       case changeType.delete:
+      case changeType.pending:
       case changeType.none:
       default: {
         break;
@@ -312,6 +318,9 @@ const applyChangesToObject = (initialObject: Record<string, unknown>, objectChan
         revisedObject = Object.fromEntries(Object.entries(revisedObject).filter(([p]) => p !== prop));
         break;
       }
+      case changeType.update:
+      case changeType.pending:
+      case changeType.delete:
       case changeType.none:
       default: {
         break;

@@ -3,11 +3,13 @@ import { type Change, changeType } from "./types";
 
 export type Diffable = string | unknown[] | Record<string, unknown>;
 
-const isDiffable = (d: unknown): d is Diffable =>
-  { return typeof d === "string" || (typeof d === "object" && d !== null) };
+const isDiffable = (d: unknown): d is Diffable => {
+  return typeof d === "string" || (typeof d === "object" && d !== null);
+};
 
-const isRecord = (d: unknown): d is Record<string, unknown> =>
-  { return typeof d === "object" && d !== null && !Array.isArray(d) };
+const isRecord = (d: unknown): d is Record<string, unknown> => {
+  return typeof d === "object" && d !== null && !Array.isArray(d);
+};
 
 const isSameType = (a: unknown, b: unknown): boolean => {
   if (typeof a === "string" && typeof b === "string") {
@@ -18,10 +20,14 @@ const isSameType = (a: unknown, b: unknown): boolean => {
 };
 
 const hasCommonSubsequence = (a: string, b: string): boolean => {
-  const alphabetOfB = new Set(b);
+  const alphabetOfB = new Set<string>();
 
-  for (const char of a) {
-    if (alphabetOfB.has(char)) {
+  for (let i = 0; i < b.length; i = i + 1) {
+    alphabetOfB.add(b[i]);
+  }
+
+  for (let i = 0; i < a.length; i = i + 1) {
+    if (alphabetOfB.has(a[i])) {
       return true;
     }
   }
@@ -72,8 +78,11 @@ const diffTextInternal = (
 
   let loopP = -1;
 
+  frontierPoints[offset + 1] = 0;
+
   do {
     loopP = loopP + 1;
+
     for (let k = -loopP; k < delta; k = k + 1) {
       frontierPoints[k + offset] = snake(
         k,
@@ -81,6 +90,7 @@ const diffTextInternal = (
         frontierPoints[k + offset + 1]
       );
     }
+
     for (let k = delta + loopP; k > delta; k = k - 1) {
       frontierPoints[k + offset] = snake(
         k,
@@ -88,6 +98,7 @@ const diffTextInternal = (
         frontierPoints[k + offset + 1]
       );
     }
+
     frontierPoints[delta + offset] = snake(
       delta,
       frontierPoints[delta + offset - 1] + 1,
@@ -115,22 +126,26 @@ const diffTextInternal = (
   for (let i = editPath.length - 1; i >= 0; i = i - 1) {
     const point = editPath[i] as { x: number; y: number };
 
-    while (curX <= point.x || curY <= point.y) {
-      if (point.y - point.x > curY - curX) {
+    while (curX < point.x || curY < point.y) {
+      const deltaEdit = (point.y - point.x) - (curY - curX);
+
+      if (deltaEdit > 0) {
         if (isReversed) {
           changeList.push([changeType.delete, curIndex, undefined]);
         } else {
-          changeList.push([changeType.insert, curIndex, b[curY - 1]]);
+          changeList.push([changeType.insert, curIndex, b[curY]]);
           curIndex = curIndex + 1;
         }
+
         curY = curY + 1;
-      } else if (point.y - point.x < curY - curX) {
+      } else if (deltaEdit < 0) {
         if (isReversed) {
-          changeList.push([changeType.insert, curIndex, a[curX - 1]]);
+          changeList.push([changeType.insert, curIndex, a[curX]]);
           curIndex = curIndex + 1;
         } else {
           changeList.push([changeType.delete, curIndex, undefined]);
         }
+
         curX = curX + 1;
       } else {
         curX = curX + 1;
@@ -147,15 +162,14 @@ const getChangesText = (a: string, b: string): Change[] => {
   if (!hasCommonSubsequence(a, b)) {
     const deletes: Change[] = [];
 
-    for (const _ of a.split("")) {
+    for (let i = 0; i < a.length; i = i + 1) {
       deletes.push([changeType.delete, 0, undefined]);
     }
 
     const inserts: Change[] = [];
-    const charactersB = b.split("");
 
-    for (const [index, character] of charactersB.entries()) {
-      inserts.push([changeType.insert, index, character]);
+    for (let i = 0; i < b.length; i = i + 1) {
+      inserts.push([changeType.insert, i, b[i]]);
     }
 
     return [...deletes, ...inserts];
@@ -202,11 +216,13 @@ const getArrayChanges = (a: unknown[], b: unknown[]): Change[] => {
             for (let insertIdx = 0; insertIdx < k; insertIdx = insertIdx + 1) {
               changeList.push([changeType.insert, bIndex + insertIdx, b[bIndex + insertIdx]]);
             }
+
             finalIndices = finalIndices + k + 1;
             bOffset = bOffset + k;
           } else {
             finalIndices = finalIndices + 1;
           }
+
           isMatchFound = true;
           break;
         }
@@ -227,6 +243,7 @@ const getArrayChanges = (a: unknown[], b: unknown[]): Change[] => {
           for (let deleteIdx = 0; deleteIdx < k; deleteIdx = deleteIdx + 1) {
             changeList.push([changeType.delete, bIndex, undefined]);
           }
+
           index = index + (k - 1);
           bOffset = bOffset - k;
           isMatchFound = true;
@@ -245,6 +262,7 @@ const getArrayChanges = (a: unknown[], b: unknown[]): Change[] => {
       if (currentDiff.length > 0) {
         changeList.push([changeType.pending, bIndex, currentDiff]);
       }
+
       finalIndices = finalIndices + 1;
     } else {
       changeList.push([changeType.update, bIndex, b[bIndex]]);
@@ -296,9 +314,11 @@ export const getChanges = (a: Diffable, b: Diffable): Change[] => {
   if (typeof a === "string" && typeof b === "string") {
     return getChangesText(a, b);
   }
+
   if (Array.isArray(a) && Array.isArray(b)) {
     return getArrayChanges(a, b);
   }
+
   if (isRecord(a) && isRecord(b)) {
     return getRecordChanges(a, b);
   }
