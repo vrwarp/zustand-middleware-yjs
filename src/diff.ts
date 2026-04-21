@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-use-before-define */
-import { type Change,changeType } from "./types";
+import { type Change, changeType } from "./types";
 
 export type Diffable = string | unknown[] | Record<string, unknown>;
 
@@ -10,7 +10,9 @@ const isRecord = (d: unknown): d is Record<string, unknown> =>
   { return typeof d === "object" && d !== null && !Array.isArray(d) };
 
 const isSameType = (a: unknown, b: unknown): boolean => {
-  if (typeof a === "string" && typeof b === "string") {return true;}
+  if (typeof a === "string" && typeof b === "string") {
+    return true;
+  }
 
   return (Array.isArray(a) && Array.isArray(b)) || (isRecord(a) && isRecord(b));
 };
@@ -45,7 +47,7 @@ const diffTextInternal = (
   const path = Array.from({ length: size }, () => -1);
 
   interface InlineInterface { x: number; y: number; k: number }
-const pathPositions: InlineInterface[] = [];
+  const pathPositions: InlineInterface[] = [];
 
   const snake = (snakeK: number, snakeP: number, snakeQ: number): number => {
     let innerY = Math.max(snakeP, snakeQ);
@@ -108,7 +110,7 @@ const pathPositions: InlineInterface[] = [];
   const changeList: Change[] = [];
   let curX = 0;
   let curY = 0;
-  let curIndex = -1;
+  let curIndex = 0;
 
   for (let i = editPath.length - 1; i >= 0; i = i - 1) {
     const point = editPath[i] as { x: number; y: number };
@@ -144,13 +146,16 @@ const pathPositions: InlineInterface[] = [];
 const getChangesText = (a: string, b: string): Change[] => {
   if (!hasCommonSubsequence(a, b)) {
     const deletes: Change[] = [];
-    for (let i = 0; i < a.length; i = i + 1) {
+
+    for (const _ of a.split("")) {
       deletes.push([changeType.delete, 0, undefined]);
     }
 
     const inserts: Change[] = [];
-    for (let i = 0; i < b.length; i = i + 1) {
-      inserts.push([changeType.insert, i, b[i]]);
+    const charactersB = b.split("");
+
+    for (const [index, character] of charactersB.entries()) {
+      inserts.push([changeType.insert, index, character]);
     }
 
     return [...deletes, ...inserts];
@@ -158,7 +163,7 @@ const getChangesText = (a: string, b: string): Change[] => {
 
   const m = a.length;
   const n = b.length;
-  const isReverse = m >= n;
+  const isReverse = m > n;
 
   return isReverse ? diffTextInternal(b, a, isReverse) : diffTextInternal(a, b, isReverse);
 };

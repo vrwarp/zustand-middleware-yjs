@@ -90,6 +90,7 @@ export const patchSharedType = (
             sharedType.insert(property as number, value as string);
           }
         }
+
         break;
       }
 
@@ -199,6 +200,7 @@ export const patchSharedType = (
             }
           }
         }
+
         break;
       }
 
@@ -213,35 +215,22 @@ export const patchSharedType = (
 const applyChangesToString = (initialString: string, stringChanges: Change[]): string => {
   let revisedString = initialString;
 
-  // Handle deletions in descending order to avoid index shifts
-  const deletions = [...stringChanges]
-    .filter(([type]) => type === changeType.delete)
-    // eslint-disable-next-line unicorn/no-array-sort
-    .sort(([, indexA], [, indexB]) => (indexB as number) - (indexA as number));
-
-  for (const [, index] of deletions) {
-    const idx = index as number;
-    const left = revisedString.slice(0, idx);
-    const right = revisedString.slice(idx + 1);
-
-    revisedString = left + right;
-  }
-
-  // Handle other changes in ascending order
-  const others = [...stringChanges]
-    .filter(([type]) => type !== changeType.delete)
-    // eslint-disable-next-line unicorn/no-array-sort
-    .sort(([, indexA], [, indexB]) => (indexA as number) - (indexB as number));
-
-  for (const [type, index, value] of others) {
-    const idx = index as number;
-
+  for (const [type, index, value] of stringChanges) {
     switch (type) {
       case changeType.insert: {
+        const idx = index as number;
         const left = revisedString.slice(0, idx);
         const right = revisedString.slice(idx);
 
         revisedString = left + (value as string) + right;
+        break;
+      }
+      case changeType.delete: {
+        const idx = index as number;
+        const left = revisedString.slice(0, idx);
+        const right = revisedString.slice(idx + 1);
+
+        revisedString = left + right;
         break;
       }
       case changeType.update:
