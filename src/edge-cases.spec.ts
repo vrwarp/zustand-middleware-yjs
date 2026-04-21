@@ -89,7 +89,6 @@ describe("Edge cases from fuzz testing", () => {
       const b = ["b>Jz0", "b>Jz0"];
 
       const changes = getChanges(a, b);
-      console.log("Changes:", changes);
 
       expect(changes).toEqual([
         [changeType.update, 1, "b>Jz0"]
