@@ -34,8 +34,6 @@ export const patchSharedType = (
   }: PatchOptions = {}
 ): void => {
   const options = { atomicKeys, disableYText, previousState, yTextKeys };
-  const atomicKeysSet = new Set(atomicKeys);
-  const yTextKeysSet = new Set(yTextKeys);
   const sharedTypeJson = typeof (sharedType as yjs.Map<unknown>).toJSON === "function"
     ? (sharedType as yjs.Map<unknown>).toJSON()
     // eslint-disable-next-line @typescript-eslint/no-base-to-string
@@ -53,8 +51,8 @@ export const patchSharedType = (
 
             if (typeof value === "string") {
               const isWantsYText = options.disableYText
-                ? yTextKeysSet.has(prop)
-                : !atomicKeysSet.has(prop);
+                ? options.yTextKeys.includes(prop)
+                : !options.atomicKeys.includes(prop);
 
               if (isWantsYText) {
                 sharedType.set(prop, stringToYText(value));
@@ -133,8 +131,8 @@ export const patchSharedType = (
 
           if (typeof newValue === "string") {
             const isWantsYText = options.disableYText
-              ? yTextKeysSet.has(prop)
-              : !atomicKeysSet.has(prop);
+              ? options.yTextKeys.includes(prop)
+              : !options.atomicKeys.includes(prop);
 
             if ((isWantsYText && !(existing instanceof yjs.Text)) || (!isWantsYText && (existing instanceof yjs.Text))) {
               isTextMappingMismatch = true;
@@ -143,8 +141,8 @@ export const patchSharedType = (
 
           if (isTextMappingMismatch) {
             const isWantsYText = options.disableYText
-              ? yTextKeysSet.has(prop)
-              : !atomicKeysSet.has(prop);
+              ? options.yTextKeys.includes(prop)
+              : !options.atomicKeys.includes(prop);
 
             if (isWantsYText) {
               sharedType.set(prop, stringToYText(newValue as string));
