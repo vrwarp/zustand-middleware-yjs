@@ -311,7 +311,7 @@ const applyChangesToObject = (initialObject: Record<string, unknown>, objectChan
       }
       case changeType.pending: {
         const isUnsafeKey = prop === "constructor" || prop === "prototype";
-        const isOwnProperty = Object.prototype.hasOwnProperty.call(revisedObject, prop);
+        const isOwnProperty = Object.hasOwn(revisedObject, prop);
 
         if (isUnsafeKey && !isOwnProperty) {
           continue;
