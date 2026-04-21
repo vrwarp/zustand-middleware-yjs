@@ -5,7 +5,6 @@ import {
   stringToYText,
   yArrayToArray,
   yMapToObject,
-  yTextToString,
 } from "./mapping";
 
 describe("arrayToYArray", () =>
@@ -242,23 +241,6 @@ describe("objectToYMap and yMapToObject are inverses", () =>
     ymap.set("map", objectToYMap(object));
 
     expect(yMapToObject(ymap.get("map") as Y.Map<any>)).toEqual(object);
-  });
-});
-
-describe("yTextToString", () =>
-{
-  it.each([
-    "hello",
-    "rawr",
-    "goodbye"
-  ])("Returns a string with the same content as the YText.", (string) =>
-  {
-    const ydoc = new Y.Doc();
-    const ytext = ydoc.getText("tmp");
-
-    ytext.insert(0, string);
-
-    expect(yTextToString(ytext)).toEqual(string);
   });
 });
 
