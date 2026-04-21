@@ -106,6 +106,8 @@ export const objectToYMap = (
   }: MappingOptions = {}
 ): yjs.Map<unknown> => {
   const options = { atomicKeys, disableYText, yTextKeys };
+  const atomicKeysSet = new Set(atomicKeys);
+  const yTextKeysSet = new Set(yTextKeys);
   const ymap = new yjs.Map<unknown>();
 
   for (const [key, value] of Object.entries(object)) {
@@ -114,8 +116,8 @@ export const objectToYMap = (
     }
     if (typeof value === "string") {
       const isWantsYText = options.disableYText
-        ? options.yTextKeys.includes(key)
-        : !options.atomicKeys.includes(key);
+        ? yTextKeysSet.has(key)
+        : !atomicKeysSet.has(key);
 
       if (isWantsYText) {
         ymap.set(key, stringToYText(value));
