@@ -42,10 +42,6 @@ export const patchSharedType = (
   const changes = getChanges(sharedTypeJson as string | unknown[] | Record<string, unknown>, newState as string | unknown[] | Record<string, unknown>);
 
   for (const [type, property, value] of changes) {
-    if (typeof property === "string" && property === "__proto__") {
-      continue;
-    }
-
     switch (type) {
       case changeType.insert:
       case changeType.update: {
@@ -299,7 +295,7 @@ const applyChangesToObject = (initialObject: Record<string, unknown>, objectChan
   for (const [type, property, value] of objectChanges) {
     const prop = property as string;
 
-    if (prop === "__proto__") {
+    if (prop === "__proto__" || prop === "constructor" || prop === "prototype") {
       continue;
     }
 
@@ -310,13 +306,6 @@ const applyChangesToObject = (initialObject: Record<string, unknown>, objectChan
         break;
       }
       case changeType.pending: {
-        const isUnsafeKey = prop === "constructor" || prop === "prototype";
-        const isOwnProperty = Object.hasOwn(revisedObject, prop);
-
-        if (isUnsafeKey && !isOwnProperty) {
-          continue;
-        }
-
         revisedObject[prop] = applyChanges(revisedObject[prop] as string | unknown[] | Record<string, unknown>, value as Change[]);
         break;
       }
