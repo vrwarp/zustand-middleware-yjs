@@ -143,8 +143,15 @@ const pathPositions: InlineInterface[] = [];
 
 const getChangesText = (a: string, b: string): Change[] => {
   if (!hasCommonSubsequence(a, b)) {
-    const deletes = a.split("").map<Change>(() => [changeType.delete, 0, undefined]);
-    const inserts = b.split("").map<Change>((character, index) => [changeType.insert, index, character]);
+    const deletes: Change[] = [];
+    for (let i = 0; i < a.length; i = i + 1) {
+      deletes.push([changeType.delete, 0, undefined]);
+    }
+
+    const inserts: Change[] = [];
+    for (let i = 0; i < b.length; i = i + 1) {
+      inserts.push([changeType.insert, i, b[i]]);
+    }
 
     return [...deletes, ...inserts];
   }

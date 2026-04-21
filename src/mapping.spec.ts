@@ -286,7 +286,8 @@ describe("yTypeToChanges", () =>
 {
   it("Converts YText to an insert change.", () =>
   {
-    const ytext = new Y.Text();
+    const ydoc = new Y.Doc();
+    const ytext = ydoc.getText();
     ytext.insert(0, "hello");
     expect(yTypeToChanges(ytext)).toEqual([
       [ changeType.insert, 0, "hello" ]
@@ -295,7 +296,8 @@ describe("yTypeToChanges", () =>
 
   it("Converts a YArray of primitives to insert changes.", () =>
   {
-    const yarray = new Y.Array();
+    const ydoc = new Y.Doc();
+    const yarray = ydoc.getArray();
     yarray.push([ 1, "foo", true ]);
 
     expect(yTypeToChanges(yarray)).toEqual([
@@ -307,7 +309,8 @@ describe("yTypeToChanges", () =>
 
   it("Converts nested YArrays to pending changes.", () =>
   {
-    const yarray = new Y.Array();
+    const ydoc = new Y.Doc();
+    const yarray = ydoc.getArray();
     const nested = new Y.Array();
     nested.push([ 1 ]);
     yarray.push([ nested ]);
@@ -323,7 +326,8 @@ describe("yTypeToChanges", () =>
 
   it("Converts YMaps nested in YArrays to pending changes.", () =>
   {
-    const yarray = new Y.Array();
+    const ydoc = new Y.Doc();
+    const yarray = ydoc.getArray();
     const nested = new Y.Map();
     nested.set("foo", 1);
     yarray.push([ nested ]);
@@ -339,7 +343,8 @@ describe("yTypeToChanges", () =>
 
   it("Converts YText nested in YArrays to pending changes.", () =>
   {
-    const yarray = new Y.Array();
+    const ydoc = new Y.Doc();
+    const yarray = ydoc.getArray();
     const nested = new Y.Text();
     nested.insert(0, "bar");
     yarray.push([ nested ]);
@@ -355,7 +360,8 @@ describe("yTypeToChanges", () =>
 
   it("Converts a YMap of primitives to insert changes.", () =>
   {
-    const ymap = new Y.Map();
+    const ydoc = new Y.Doc();
+    const ymap = ydoc.getMap();
     ymap.set("foo", 1);
     ymap.set("bar", "baz");
 
@@ -367,7 +373,8 @@ describe("yTypeToChanges", () =>
 
   it("Converts nested YMaps to pending changes.", () =>
   {
-    const ymap = new Y.Map();
+    const ydoc = new Y.Doc();
+    const ymap = ydoc.getMap();
     const nested = new Y.Map();
     nested.set("bar", 2);
     ymap.set("foo", nested);
@@ -383,7 +390,8 @@ describe("yTypeToChanges", () =>
 
   it("Converts YArrays nested in YMaps to pending changes.", () =>
   {
-    const ymap = new Y.Map();
+    const ydoc = new Y.Doc();
+    const ymap = ydoc.getMap();
     const nested = new Y.Array();
     nested.push([ 1 ]);
     ymap.set("foo", nested);
@@ -399,7 +407,8 @@ describe("yTypeToChanges", () =>
 
   it("Converts YText nested in YMaps to pending changes.", () =>
   {
-    const ymap = new Y.Map();
+    const ydoc = new Y.Doc();
+    const ymap = ydoc.getMap();
     const nested = new Y.Text();
     nested.insert(0, "baz");
     ymap.set("foo", nested);
@@ -415,7 +424,8 @@ describe("yTypeToChanges", () =>
 
   it("Handles complex nested structures.", () =>
   {
-    const ymap = new Y.Map();
+    const ydoc = new Y.Doc();
+    const ymap = ydoc.getMap();
     const yarray = new Y.Array();
     const ytext = new Y.Text();
     ytext.insert(0, "hello");
