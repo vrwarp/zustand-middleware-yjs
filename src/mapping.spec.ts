@@ -1,4 +1,5 @@
 import * as Y from "yjs";
+import { changeType } from "./types";
 import {
   arrayToYArray,
   objectToYMap,
@@ -6,6 +7,7 @@ import {
   yArrayToArray,
   yMapToObject,
   yTextToString,
+  yTypeToChanges,
 } from "./mapping";
 
 describe("arrayToYArray", () =>
@@ -277,5 +279,158 @@ describe("stringToYText", () =>
     ymap.set("text", stringToYText(string));
 
     expect((ymap.get("text") as Y.Text).toString()).toEqual(string);
+  });
+});
+
+describe("yTypeToChanges", () =>
+{
+  it("Converts YText to an insert change.", () =>
+  {
+    const ytext = new Y.Text("hello");
+    expect(yTypeToChanges(ytext)).toEqual([
+      [ changeType.insert, 0, "hello" ]
+    ]);
+  });
+
+  it("Converts a YArray of primitives to insert changes.", () =>
+  {
+    const yarray = new Y.Array();
+    yarray.push([ 1, "foo", true ]);
+
+    expect(yTypeToChanges(yarray)).toEqual([
+      [ changeType.insert, 0, 1 ],
+      [ changeType.insert, 1, "foo" ],
+      [ changeType.insert, 2, true ]
+    ]);
+  });
+
+  it("Converts nested YArrays to pending changes.", () =>
+  {
+    const yarray = new Y.Array();
+    const nested = new Y.Array();
+    nested.push([ 1 ]);
+    yarray.push([ nested ]);
+
+    expect(yTypeToChanges(yarray)).toEqual([
+      [
+        changeType.pending,
+        0,
+        [ [ changeType.insert, 0, 1 ] ]
+      ]
+    ]);
+  });
+
+  it("Converts YMaps nested in YArrays to pending changes.", () =>
+  {
+    const yarray = new Y.Array();
+    const nested = new Y.Map();
+    nested.set("foo", 1);
+    yarray.push([ nested ]);
+
+    expect(yTypeToChanges(yarray)).toEqual([
+      [
+        changeType.pending,
+        0,
+        [ [ changeType.insert, "foo", 1 ] ]
+      ]
+    ]);
+  });
+
+  it("Converts YText nested in YArrays to pending changes.", () =>
+  {
+    const yarray = new Y.Array();
+    const nested = new Y.Text("bar");
+    yarray.push([ nested ]);
+
+    expect(yTypeToChanges(yarray)).toEqual([
+      [
+        changeType.pending,
+        0,
+        [ [ changeType.insert, 0, "bar" ] ]
+      ]
+    ]);
+  });
+
+  it("Converts a YMap of primitives to insert changes.", () =>
+  {
+    const ymap = new Y.Map();
+    ymap.set("foo", 1);
+    ymap.set("bar", "baz");
+
+    expect(yTypeToChanges(ymap)).toEqual([
+      [ changeType.insert, "foo", 1 ],
+      [ changeType.insert, "bar", "baz" ]
+    ]);
+  });
+
+  it("Converts nested YMaps to pending changes.", () =>
+  {
+    const ymap = new Y.Map();
+    const nested = new Y.Map();
+    nested.set("bar", 2);
+    ymap.set("foo", nested);
+
+    expect(yTypeToChanges(ymap)).toEqual([
+      [
+        changeType.pending,
+        "foo",
+        [ [ changeType.insert, "bar", 2 ] ]
+      ]
+    ]);
+  });
+
+  it("Converts YArrays nested in YMaps to pending changes.", () =>
+  {
+    const ymap = new Y.Map();
+    const nested = new Y.Array();
+    nested.push([ 1 ]);
+    ymap.set("foo", nested);
+
+    expect(yTypeToChanges(ymap)).toEqual([
+      [
+        changeType.pending,
+        "foo",
+        [ [ changeType.insert, 0, 1 ] ]
+      ]
+    ]);
+  });
+
+  it("Converts YText nested in YMaps to pending changes.", () =>
+  {
+    const ymap = new Y.Map();
+    const nested = new Y.Text("baz");
+    ymap.set("foo", nested);
+
+    expect(yTypeToChanges(ymap)).toEqual([
+      [
+        changeType.pending,
+        "foo",
+        [ [ changeType.insert, 0, "baz" ] ]
+      ]
+    ]);
+  });
+
+  it("Handles complex nested structures.", () =>
+  {
+    const ymap = new Y.Map();
+    const yarray = new Y.Array();
+    const ytext = new Y.Text("hello");
+
+    yarray.push([ ytext ]);
+    ymap.set("array", yarray);
+
+    expect(yTypeToChanges(ymap)).toEqual([
+      [
+        changeType.pending,
+        "array",
+        [
+          [
+            changeType.pending,
+            0,
+            [ [ changeType.insert, 0, "hello" ] ]
+          ]
+        ]
+      ]
+    ]);
   });
 });
