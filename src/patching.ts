@@ -295,6 +295,10 @@ const applyChangesToObject = (initialObject: Record<string, unknown>, objectChan
   for (const [type, property, value] of objectChanges) {
     const prop = property as string;
 
+    if (prop === "__proto__" || prop === "constructor" || prop === "prototype") {
+      continue;
+    }
+
     switch (type) {
       case changeType.insert:
       case changeType.update: {
