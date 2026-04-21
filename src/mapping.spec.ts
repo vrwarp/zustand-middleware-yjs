@@ -286,7 +286,8 @@ describe("yTypeToChanges", () =>
 {
   it("Converts YText to an insert change.", () =>
   {
-    const ytext = new Y.Text("hello");
+    const ytext = new Y.Text();
+    ytext.insert(0, "hello");
     expect(yTypeToChanges(ytext)).toEqual([
       [ changeType.insert, 0, "hello" ]
     ]);
@@ -339,7 +340,8 @@ describe("yTypeToChanges", () =>
   it("Converts YText nested in YArrays to pending changes.", () =>
   {
     const yarray = new Y.Array();
-    const nested = new Y.Text("bar");
+    const nested = new Y.Text();
+    nested.insert(0, "bar");
     yarray.push([ nested ]);
 
     expect(yTypeToChanges(yarray)).toEqual([
@@ -398,7 +400,8 @@ describe("yTypeToChanges", () =>
   it("Converts YText nested in YMaps to pending changes.", () =>
   {
     const ymap = new Y.Map();
-    const nested = new Y.Text("baz");
+    const nested = new Y.Text();
+    nested.insert(0, "baz");
     ymap.set("foo", nested);
 
     expect(yTypeToChanges(ymap)).toEqual([
@@ -414,7 +417,8 @@ describe("yTypeToChanges", () =>
   {
     const ymap = new Y.Map();
     const yarray = new Y.Array();
-    const ytext = new Y.Text("hello");
+    const ytext = new Y.Text();
+    ytext.insert(0, "hello");
 
     yarray.push([ ytext ]);
     ymap.set("array", yarray);

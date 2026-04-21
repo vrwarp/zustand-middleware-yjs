@@ -143,10 +143,8 @@ const pathPositions: InlineInterface[] = [];
 
 const getChangesText = (a: string, b: string): Change[] => {
   if (!hasCommonSubsequence(a, b)) {
-    // eslint-disable-next-line @typescript-eslint/no-misused-spread
-    const deletes = [...a].map<Change>(() => [changeType.delete, 0, undefined]);
-    // eslint-disable-next-line @typescript-eslint/no-misused-spread
-    const inserts = [...b].map<Change>((character, index) => [changeType.insert, index, character]);
+    const deletes = a.split("").map<Change>(() => [changeType.delete, 0, undefined]);
+    const inserts = b.split("").map<Change>((character, index) => [changeType.insert, index, character]);
 
     return [...deletes, ...inserts];
   }
