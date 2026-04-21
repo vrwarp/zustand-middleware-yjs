@@ -1,11 +1,13 @@
 import * as Y from "yjs";
 import { createStore as create, } from "zustand/vanilla";
+import * as diff from "./diff";
 import { arrayToYArray, objectToYMap, } from "./mapping";
 import {
   patchSharedType,
   patchState,
   patchStore,
 } from "./patching";
+import { changeType } from "./types";
 
 describe("patchSharedType", () =>
 {
@@ -746,5 +748,28 @@ describe("patchState", () =>
 
     expect(patchedState).toEqual(newState);
     expect(patchedState.foo.bar).toBe(2);
+  });
+
+  it("handles unsupported state types (like number) by falling back to applyChangesToObject", () =>
+  {
+    // We mock getChanges to simulate a situation where changes are detected
+    // on an unsupported state type, forcing applyChanges to process it.
+    const mockGetChanges = jest.spyOn(diff, "getChanges").mockReturnValue([
+      [changeType.update, "foo", "bar"],
+    ] as any);
+
+    try
+    {
+      // Number is not string, array, or object
+      const result = patchState(1 as any, 2 as any);
+
+      // It falls through to applyChangesToObject, which does `{ ...1 }` -> `{}`
+      // and then applies the update, returning `{ foo: 'bar' }`.
+      expect(result).toEqual({ "foo": "bar", });
+    }
+    finally
+    {
+      mockGetChanges.mockRestore();
+    }
   });
 });
