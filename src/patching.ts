@@ -211,23 +211,24 @@ export const patchSharedType = (
 };
 
 const applyChangesToString = (initialString: string, stringChanges: Change[]): string => {
-  // eslint-disable-next-line unicorn/prefer-spread
-  const revisedStringArray = initialString.split("");
+  let revisedString = initialString;
 
   for (const [type, index, value] of stringChanges) {
     switch (type) {
       case changeType.insert: {
         const idx = index as number;
+        const left = revisedString.slice(0, idx);
+        const right = revisedString.slice(idx);
 
-        revisedStringArray.splice(idx, 0, value as string);
-
+        revisedString = left + (value as string) + right;
         break;
       }
       case changeType.delete: {
         const idx = index as number;
+        const left = revisedString.slice(0, idx);
+        const right = revisedString.slice(idx + 1);
 
-        revisedStringArray.splice(idx, 1);
-
+        revisedString = left + right;
         break;
       }
       case changeType.update:
@@ -239,7 +240,7 @@ const applyChangesToString = (initialString: string, stringChanges: Change[]): s
     }
   }
 
-  return revisedStringArray.join("");
+  return revisedString;
 };
 
 const applyChangesToArray = (initialArray: unknown[], arrayChanges: Change[]): unknown[] => {

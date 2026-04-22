@@ -427,16 +427,16 @@ describe("getChanges", () => {
         "ab",
         "ac",
         [
-          [changeType.insert, 1, "c"],
-          [changeType.delete, 2, undefined]
+          [changeType.delete, 1, undefined],
+          [changeType.insert, 1, "c"]
         ]
       ],
       [
         "ac",
         "bc",
         [
-          [changeType.insert, 0, "b"],
-          [changeType.delete, 1, undefined]
+          [changeType.delete, 0, undefined],
+          [changeType.insert, 0, "b"]
         ]
       ],
       [
@@ -505,8 +505,8 @@ describe("getChanges", () => {
         "I love 😀",
         "I love 😁",
         [
-          [changeType.insert, 8, "\uDE01"],
-          [changeType.delete, 9, undefined]
+          [changeType.delete, 8, undefined],
+          [changeType.insert, 8, "\uDE01"]
         ]
       ]
     ])(
