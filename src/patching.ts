@@ -290,7 +290,7 @@ const applyChangesToArray = (initialArray: unknown[], arrayChanges: Change[]): u
 };
 
 const applyChangesToObject = (initialObject: Record<string, unknown>, objectChanges: Change[]): Record<string, unknown> => {
-  const revisedObject = { ...initialObject };
+  let revisedObject = { ...initialObject };
 
   for (const [type, property, value] of objectChanges) {
     const prop = property as string;
@@ -306,8 +306,12 @@ const applyChangesToObject = (initialObject: Record<string, unknown>, objectChan
         break;
       }
       case changeType.delete: {
-        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete, no-restricted-syntax/noDeleteOperator
-        delete revisedObject[prop];
+        // We use rest destructuring to efficiently omit the deleted property
+        // while avoiding the use of the `delete` operator which is restricted by linting.
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { [prop]: unused, ...remaining } = revisedObject;
+
+        revisedObject = remaining;
         break;
       }
       case changeType.none:
