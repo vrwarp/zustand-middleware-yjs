@@ -32,15 +32,6 @@ const isObject = (value: unknown): value is Record<string, unknown> => {
 export const stringToYText = (value: string): yjs.Text => new yjs.Text(value);
 
 /**
- * Converts a Y.Text object to a string.
- *
- * @param ytext - The Y.Text object to convert.
- * @returns A string representation of the Y.Text object.
- */
-// eslint-disable-next-line @typescript-eslint/no-base-to-string
-export const yTextToString = (ytext: yjs.Text): string => ytext.toString();
-
-/**
  * Converts an array to a Y.Array object.
  *
  * @param array - The array to convert.
