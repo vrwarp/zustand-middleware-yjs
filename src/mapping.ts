@@ -36,13 +36,14 @@ export const stringToYText = (value: string): yjs.Text => new yjs.Text(value);
  *
  * @param value - The value to convert.
  * @param options - The mapping options.
- * @param key - The key associated with the value, if applicable.
+ * @param convertOptions - Additional options for conversion.
+ * @param convertOptions.key - The key associated with the value, if applicable.
  * @returns The converted value, which may be a Yjs shared type or a primitive.
  */
 export const convertValue = (
   value: unknown,
   options: MappingOptions,
-  key?: string
+  { key }: { key?: string } = {}
 ): unknown => {
   if (typeof value === "string") {
     const isWantsYText = options.disableYText
@@ -130,7 +131,7 @@ export const objectToYMap = (
       continue;
     }
 
-    ymap.set(key, convertValue(value, options, key));
+    ymap.set(key, convertValue(value, options, { key }));
   }
 
   return ymap;

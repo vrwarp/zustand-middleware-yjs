@@ -49,7 +49,7 @@ export const patchSharedType = (
           if (sharedType instanceof yjs.Map) {
             const prop = property as string;
 
-            sharedType.set(prop, convertValue(value, options, prop));
+            sharedType.set(prop, convertValue(value, options, { key: prop }));
           } else if (sharedType instanceof yjs.Array) {
             const index = property as number;
 
@@ -112,7 +112,7 @@ export const patchSharedType = (
           }
 
           if (isTextMappingMismatch) {
-            sharedType.set(prop, convertValue(newValue, options, prop));
+            sharedType.set(prop, convertValue(newValue, options, { key: prop }));
           } else {
             if (typeof newValue === "string" && !(existing instanceof yjs.Text)) {
               // Plain string diff - set it directly since primitive strings can't be patched incrementally
