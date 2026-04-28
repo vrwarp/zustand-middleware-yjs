@@ -45,6 +45,14 @@ export const patchSharedType = (
     switch (type) {
       case changeType.insert:
       case changeType.update: {
+        if (
+          property === "__proto__" ||
+          property === "constructor" ||
+          property === "prototype"
+        ) {
+          break;
+        }
+
         if (!(value instanceof Function)) {
           if (sharedType instanceof yjs.Map) {
             const prop = property as string;
@@ -94,6 +102,14 @@ export const patchSharedType = (
       }
 
       case changeType.delete: {
+        if (
+          property === "__proto__" ||
+          property === "constructor" ||
+          property === "prototype"
+        ) {
+          break;
+        }
+
         const prev = options.previousState;
 
         if (prev && typeof prev === "object" && !(property as string in (prev as Record<string, unknown>))) {
@@ -117,6 +133,14 @@ export const patchSharedType = (
       }
 
       case changeType.pending: {
+        if (
+          property === "__proto__" ||
+          property === "constructor" ||
+          property === "prototype"
+        ) {
+          break;
+        }
+
         let childPreviousState: unknown;
 
         if (options.previousState && typeof options.previousState === "object") {

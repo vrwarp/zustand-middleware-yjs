@@ -100,7 +100,12 @@ export const objectToYMap = (
   const ymap = new yjs.Map<unknown>();
 
   for (const [key, value] of Object.entries(object)) {
-    if (typeof value === "function") {
+    if (
+      key === "__proto__" ||
+      key === "constructor" ||
+      key === "prototype" ||
+      typeof value === "function"
+    ) {
       continue;
     }
     if (typeof value === "string") {
