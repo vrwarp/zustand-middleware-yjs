@@ -32,6 +32,40 @@ const isObject = (value: unknown): value is Record<string, unknown> => {
 export const stringToYText = (value: string): yjs.Text => new yjs.Text(value);
 
 /**
+ * Converts a value to a Yjs shared type based on the mapping options.
+ *
+ * @param value - The value to convert.
+ * @param options - The mapping options.
+ * @param key - The key associated with the value, if applicable.
+ * @returns The converted value, which may be a Yjs shared type or a primitive.
+ */
+export const convertValue = (
+  value: unknown,
+  options: MappingOptions,
+  key?: string
+): unknown => {
+  if (typeof value === "string") {
+    const isWantsYText = options.disableYText
+      ? (key !== undefined && options.yTextKeys?.includes(key))
+      : (key === undefined || !options.atomicKeys?.includes(key));
+
+    return isWantsYText ? stringToYText(value) : value;
+  }
+
+  if (Array.isArray(value)) {
+    // eslint-disable-next-line @typescript-eslint/no-use-before-define
+    return arrayToYArray(value, options);
+  }
+
+  if (isObject(value)) {
+    // eslint-disable-next-line @typescript-eslint/no-use-before-define
+    return objectToYMap(value, options);
+  }
+
+  return value;
+};
+
+/**
  * Converts an array to a Y.Array object.
  *
  * @param array - The array to convert.
@@ -54,16 +88,8 @@ export const arrayToYArray = (
     if (typeof value === "function") {
       continue;
     }
-    if (typeof value === "string") {
-      mappedArray.push(options.disableYText ? value : stringToYText(value));
-    } else if (Array.isArray(value)) {
-      mappedArray.push(arrayToYArray(value, options));
-    } else if (isObject(value)) {
-      // eslint-disable-next-line @typescript-eslint/no-use-before-define
-      mappedArray.push(objectToYMap(value, options));
-    } else {
-      mappedArray.push(value);
-    }
+
+    mappedArray.push(convertValue(value, options));
   }
 
   yarray.insert(0, mappedArray);
@@ -103,23 +129,8 @@ export const objectToYMap = (
     if (typeof value === "function") {
       continue;
     }
-    if (typeof value === "string") {
-      const isWantsYText = options.disableYText
-        ? options.yTextKeys.includes(key)
-        : !options.atomicKeys.includes(key);
 
-      if (isWantsYText) {
-        ymap.set(key, stringToYText(value));
-      } else {
-        ymap.set(key, value);
-      }
-    } else if (Array.isArray(value)) {
-      ymap.set(key, arrayToYArray(value, options));
-    } else if (isObject(value)) {
-      ymap.set(key, objectToYMap(value, options));
-    } else {
-      ymap.set(key, value);
-    }
+    ymap.set(key, convertValue(value, options, key));
   }
 
   return ymap;

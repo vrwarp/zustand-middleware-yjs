@@ -2,7 +2,7 @@
 import * as yjs from "yjs";
 import type { StoreApi } from "zustand/vanilla";
 import { getChanges } from "./diff";
-import { arrayToYArray, type MappingOptions, objectToYMap, stringToYText } from "./mapping";
+import { convertValue, type MappingOptions } from "./mapping";
 import { type Change, changeType } from "./types";
 
 /**
@@ -49,23 +49,7 @@ export const patchSharedType = (
           if (sharedType instanceof yjs.Map) {
             const prop = property as string;
 
-            if (typeof value === "string") {
-              const isWantsYText = options.disableYText
-                ? options.yTextKeys.includes(prop)
-                : !options.atomicKeys.includes(prop);
-
-              if (isWantsYText) {
-                sharedType.set(prop, stringToYText(value));
-              } else {
-                sharedType.set(prop, value);
-              }
-            } else if (Array.isArray(value)) {
-              sharedType.set(prop, arrayToYArray(value, options));
-            } else if (typeof value === "object" && value !== null) {
-              sharedType.set(prop, objectToYMap(value as Record<string, unknown>, options));
-            } else {
-              sharedType.set(prop, value);
-            }
+            sharedType.set(prop, convertValue(value, options, prop));
           } else if (sharedType instanceof yjs.Array) {
             const index = property as number;
 
@@ -73,19 +57,7 @@ export const patchSharedType = (
               sharedType.delete(index);
             }
 
-            if (typeof value === "string") {
-              if (options.disableYText) {
-                sharedType.insert(index, [value]);
-              } else {
-                sharedType.insert(index, [stringToYText(value)]);
-              }
-            } else if (Array.isArray(value)) {
-              sharedType.insert(index, [arrayToYArray(value, options)]);
-            } else if (typeof value === "object" && value !== null) {
-              sharedType.insert(index, [objectToYMap(value as Record<string, unknown>, options)]);
-            } else {
-              sharedType.insert(index, [value]);
-            }
+            sharedType.insert(index, [convertValue(value, options)]);
           } else if (sharedType instanceof yjs.Text) {
             sharedType.insert(property as number, value as string);
           }
@@ -140,15 +112,7 @@ export const patchSharedType = (
           }
 
           if (isTextMappingMismatch) {
-            const isWantsYText = options.disableYText
-              ? options.yTextKeys.includes(prop)
-              : !options.atomicKeys.includes(prop);
-
-            if (isWantsYText) {
-              sharedType.set(prop, stringToYText(newValue as string));
-            } else {
-              sharedType.set(prop, newValue);
-            }
+            sharedType.set(prop, convertValue(newValue, options, prop));
           } else {
             if (typeof newValue === "string" && !(existing instanceof yjs.Text)) {
               // Plain string diff - set it directly since primitive strings can't be patched incrementally
@@ -178,13 +142,7 @@ export const patchSharedType = (
           if (isTextMappingMismatch) {
             sharedType.delete(index);
 
-            const isWantsYText = !options.disableYText;
-
-            if (isWantsYText) {
-              sharedType.insert(index, [stringToYText(newValue as string)]);
-            } else {
-              sharedType.insert(index, [newValue]);
-            }
+            sharedType.insert(index, [convertValue(newValue, options)]);
           } else {
             if (typeof newValue === "string" && !(existing instanceof yjs.Text)) {
               // Plain string diff - update directly by replacing the element
