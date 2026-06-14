@@ -6,7 +6,6 @@ export interface MappingOptions {
     yTextKeys?: string[];
 }
 export declare const stringToYText: (value: string) => yjs.Text;
-export declare const yTextToString: (ytext: yjs.Text) => string;
 export declare const arrayToYArray: (array: unknown[], { atomicKeys, disableYText, yTextKeys, }?: MappingOptions) => yjs.Array<unknown>;
 export declare const yArrayToArray: (yarray: yjs.Array<unknown>) => unknown[];
 export declare const objectToYMap: (object: Record<string, unknown>, { atomicKeys, disableYText, yTextKeys, }?: MappingOptions) => yjs.Map<unknown>;

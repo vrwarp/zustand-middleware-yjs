@@ -72,6 +72,56 @@ interface YjsOptions {
    * exceeds the local `schemaVersion`.
    */
   onObsolete?: (incomingVersion: number) => void;
+
+  /**
+   * Top-level replication whitelist (default `undefined` = replicate every
+   * non-function top-level key). When set, replication is restricted in BOTH
+   * directions to exactly these keys: a non-listed key is never written to the
+   * Y.Map, and a foreign/non-listed key is never patched into store state.
+   * `__schemaVersion` is implicitly synced when `schemaVersion` is set.
+   * Nesting below a synced key replicates fully.
+   */
+  syncedKeys?: readonly string[];
+
+  /**
+   * Inbound semantics for top-level state keys absent from the Y.Map.
+   * `"replace"` (default) = legacy replace-with-delete hydration.
+   * `"merge-defaults"` = suppress top-level inbound DELETEs for the store's
+   * declared defaults (non-function keys of the initial state), so a newly
+   * added field is not wiped when hydrating from an older document. Nested
+   * deletes still propagate.
+   */
+  hydration?: "replace" | "merge-defaults";
+
+  /**
+   * Per-top-level-key scoped diffing (default false = full-tree diff). When
+   * true, only the top-level keys whose value changed by reference are diffed
+   * outbound (each against its own subtree) and only event-named keys are
+   * re-read inbound. A performance optimization; requires immutable updates
+   * (a DEV tripwire throws on mutate-in-place drift).
+   */
+  scopedDiff?: boolean;
+
+  /**
+   * Bind the store to a NESTED Y.Map at `doc.getMap(name).get(scope.key)`
+   * instead of the top-level named map (created lazily on first flush; inbound
+   * filtered to the scope key; the poison pill still reads the top-level map).
+   */
+  scope?: { key: string };
+}
+```
+
+The middleware also attaches a per-store handle (`api.yjs`, modeled on
+`zustand/persist`'s `api.persist`), read via the named export
+`getYjsStoreHandle(store)`:
+
+```typescript
+interface YjsStoreHandle {
+  hasHydrated(): boolean;          // true once the first patch from the doc applied
+  whenHydrated(): Promise<void>;   // resolves strictly after the hydrating setState
+  markHydrated(): void;            // mark hydrated when the doc is synced but empty
+  flush(): void;                   // drain the pending outbound batch synchronously
+  isObsolete(): boolean;           // true once the schema-version poison pill fired
 }
 ```
 
@@ -201,7 +251,7 @@ Best Practices & Gotchas
 
 3.  **Transient State**:
 
-    -   If you have state that should *not* be synced (e.g., `isLoading`, `uiState`), keep it in a separate Zustand store or a separate slice that is NOT wrapped with `yjs`. Currently, the middleware syncs the entire state object returned by the store.
+    -   By default the middleware syncs the entire state object returned by the store. If you have state that should *not* be synced (e.g., `isLoading`, `uiState`), either keep it in a separate store/slice that is NOT wrapped with `yjs`, or pass `syncedKeys` to whitelist exactly the top-level keys that should replicate (both directions).
 
 4.  **Circular References**:
 
@@ -224,13 +274,29 @@ declare module 'zustand-middleware-yjs' {
     onLoaded?: () => void;
     schemaVersion?: number;
     onObsolete?: (incomingVersion: number) => void;
+    syncedKeys?: readonly string[];
+    hydration?: "replace" | "merge-defaults";
+    scopedDiff?: boolean;
+    scope?: { key: string };
   }
 
-  export function yjs<T>(
+  export interface YjsStoreHandle {
+    hasHydrated(): boolean;
+    whenHydrated(): Promise<void>;
+    markHydrated(): void;
+    flush(): void;
+    isObsolete(): boolean;
+  }
+
+  // Default export: the middleware.
+  export default function yjs<T>(
     doc: Y.Doc,
     name: string,
     config: StateCreator<T>,
     options?: YjsOptions
   ): StateCreator<T>;
+
+  // Named export: typed accessor for the per-store `api.yjs` handle.
+  export function getYjsStoreHandle(store: unknown): YjsStoreHandle;
 }
 ```
