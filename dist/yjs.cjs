@@ -1,5 +1,7 @@
 'use strict';
 
+Object.defineProperty(exports, '__esModule', { value: true });
+
 var yjs = require('yjs');
 
 function _interopNamespace(e) {
@@ -23,6 +25,14 @@ function _interopNamespace(e) {
 }
 
 var yjs__namespace = /*#__PURE__*/_interopNamespace(yjs);
+
+const isDevEnvironment = () => {
+    const nodeEnv = globalThis.process?.env?.NODE_ENV;
+    if (typeof nodeEnv === "string") {
+        return nodeEnv !== "production";
+    }
+    return false;
+};
 
 const changeType = {
     none: "none",
@@ -130,8 +140,8 @@ const diffTextInternal = (a, b, isReversed) => {
 };
 const getChangesText = (a, b) => {
     if (!hasCommonSubsequence(a, b)) {
-        const deletes = [...a].map(() => [changeType.delete, 0, undefined]);
-        const inserts = [...b].map((character, index) => [changeType.insert, index, character]);
+        const deletes = Array.from({ length: a.length }, () => [changeType.delete, 0, undefined]);
+        const inserts = Array.from({ length: b.length }, (value, index) => [changeType.insert, index, b[index]]);
         return [...deletes, ...inserts];
     }
     const m = a.length;
@@ -292,7 +302,10 @@ const objectToYMap = (object, { atomicKeys = [], disableYText = false, yTextKeys
     const options = { atomicKeys, disableYText, yTextKeys };
     const ymap = new yjs__namespace.Map();
     for (const [key, value] of Object.entries(object)) {
-        if (typeof value === "function") {
+        if (key === "__proto__" ||
+            key === "constructor" ||
+            key === "prototype" ||
+            typeof value === "function") {
             continue;
         }
         if (typeof value === "string") {
@@ -319,16 +332,29 @@ const objectToYMap = (object, { atomicKeys = [], disableYText = false, yTextKeys
     return ymap;
 };
 
-const patchSharedType = (sharedType, newState, { atomicKeys = [], disableYText = false, previousState, yTextKeys = [], } = {}) => {
+const isDangerousKey = (key) => { return key === "__proto__" || key === "constructor" || key === "prototype"; };
+const isPlainRecord = (value) => { return typeof value === "object" && value !== null && !Array.isArray(value); };
+const pickKeys = (source, keys) => {
+    const picked = {};
+    for (const key of keys) {
+        if (isDangerousKey(key)) {
+            continue;
+        }
+        if (key in source) {
+            picked[key] = source[key];
+        }
+    }
+    return picked;
+};
+const applyChangesToSharedType = (sharedType, changes, newState, { atomicKeys = [], disableYText = false, previousState, yTextKeys = [], } = {}) => {
     const options = { atomicKeys, disableYText, previousState, yTextKeys };
-    const sharedTypeJson = typeof sharedType.toJSON === "function"
-        ? sharedType.toJSON()
-        : sharedType.toString();
-    const changes = getChanges(sharedTypeJson, newState);
     for (const [type, property, value] of changes) {
         switch (type) {
             case changeType.insert:
             case changeType.update: {
+                if (isDangerousKey(property)) {
+                    break;
+                }
                 if (!(value instanceof Function)) {
                     if (sharedType instanceof yjs__namespace.Map) {
                         const prop = property;
@@ -383,12 +409,17 @@ const patchSharedType = (sharedType, newState, { atomicKeys = [], disableYText =
                 break;
             }
             case changeType.delete: {
-                const prev = options.previousState;
-                if (prev && typeof prev === "object" && !(property in prev)) {
-                    continue;
+                if (isDangerousKey(property)) {
+                    break;
                 }
                 if (sharedType instanceof yjs__namespace.Map) {
-                    sharedType.delete(property);
+                    const prev = options.previousState;
+                    const isConcurrentRemoteInsert = prev !== null
+                        && typeof prev === "object"
+                        && !(property in prev);
+                    if (!isConcurrentRemoteInsert) {
+                        sharedType.delete(property);
+                    }
                 }
                 else if (sharedType instanceof yjs__namespace.Array) {
                     const index = property;
@@ -402,6 +433,9 @@ const patchSharedType = (sharedType, newState, { atomicKeys = [], disableYText =
                 break;
             }
             case changeType.pending: {
+                if (isDangerousKey(property)) {
+                    break;
+                }
                 let childPreviousState;
                 if (options.previousState && typeof options.previousState === "object") {
                     childPreviousState = options.previousState[property];
@@ -435,7 +469,7 @@ const patchSharedType = (sharedType, newState, { atomicKeys = [], disableYText =
                             sharedType.set(prop, newValue);
                         }
                         else {
-                            patchSharedType(existing, newValue, { ...options, previousState: childPreviousState });
+                            patchSharedType(existing, newValue, { atomicKeys, disableYText, yTextKeys, previousState: childPreviousState });
                         }
                     }
                 }
@@ -466,13 +500,91 @@ const patchSharedType = (sharedType, newState, { atomicKeys = [], disableYText =
                             sharedType.insert(index, [newValue]);
                         }
                         else {
-                            patchSharedType(existing, newValue, { ...options, previousState: childPreviousState });
+                            patchSharedType(existing, newValue, { atomicKeys, disableYText, yTextKeys, previousState: childPreviousState });
                         }
                     }
                 }
                 break;
             }
         }
+    }
+};
+const patchSharedType = (sharedType, newState, { atomicKeys, disableYText, previousState, yTextKeys, syncedKeys, } = {}) => {
+    const sharedTypeJson = typeof sharedType.toJSON === "function"
+        ? sharedType.toJSON()
+        : sharedType.toString();
+    const shouldApplyWhitelist = syncedKeys !== undefined
+        && isPlainRecord(sharedTypeJson)
+        && isPlainRecord(newState);
+    const a = shouldApplyWhitelist
+        ? pickKeys(sharedTypeJson, syncedKeys)
+        : sharedTypeJson;
+    const b = shouldApplyWhitelist
+        ? pickKeys(newState, syncedKeys)
+        : newState;
+    const changes = getChanges(a, b);
+    applyChangesToSharedType(sharedType, changes, b, {
+        atomicKeys,
+        disableYText,
+        previousState,
+        yTextKeys,
+    });
+};
+const patchSharedTypeScoped = (sharedType, newState, previousState, { atomicKeys, disableYText, yTextKeys, syncedKeys, } = {}) => {
+    const prevRecord = isPlainRecord(previousState) ? previousState : {};
+    const newRecord = isPlainRecord(newState) ? newState : {};
+    const keys = new Set([...Object.keys(prevRecord), ...Object.keys(newRecord)]);
+    for (const key of keys) {
+        if (isDangerousKey(key)) {
+            continue;
+        }
+        if (syncedKeys !== undefined && !syncedKeys.has(key)) {
+            continue;
+        }
+        const prevValue = prevRecord[key];
+        const nextValue = newRecord[key];
+        if (prevValue instanceof Function || nextValue instanceof Function) {
+            continue;
+        }
+        const hasPresenceChanged = (key in newRecord) !== (key in prevRecord);
+        if (!hasPresenceChanged && Object.is(prevValue, nextValue)) {
+            continue;
+        }
+        const a = {};
+        if (sharedType.has(key)) {
+            const existing = sharedType.get(key);
+            a[key] = existing instanceof yjs__namespace.AbstractType ? existing.toJSON() : existing;
+        }
+        const b = {};
+        if (key in newRecord) {
+            b[key] = nextValue;
+        }
+        applyChangesToSharedType(sharedType, getChanges(a, b), b, { atomicKeys, disableYText, yTextKeys, previousState: prevRecord });
+    }
+};
+const assertScopedDiffConvergence = (sharedType, state, { syncedKeys } = {}) => {
+    const mapJson = sharedType.toJSON();
+    const stateRecord = {};
+    if (isPlainRecord(state)) {
+        for (const [key, value] of Object.entries(state)) {
+            if (!(value instanceof Function)) {
+                stateRecord[key] = value;
+            }
+        }
+    }
+    const a = syncedKeys ? pickKeys(mapJson, syncedKeys) : mapJson;
+    const b = syncedKeys ? pickKeys(stateRecord, syncedKeys) : stateRecord;
+    const residual = getChanges(a, b).filter(([type]) => type === changeType.update || type === changeType.pending);
+    if (residual.length > 0) {
+        const keys = residual
+            .map(([type, property]) => `"${String(property)}" (${type})`)
+            .join(", ");
+        throw new Error(`[zustand-middleware-yjs] scopedDiff divergence tripwire: after a ` +
+            `scoped flush, a full diff still finds changes for ${keys}. This ` +
+            `almost always means a set() mutated state IN PLACE (same object ` +
+            `reference), which the Object.is fast path cannot see — the Y.Doc and ` +
+            `the store would drift silently. Fix the store to use immutable ` +
+            `updates, or turn scopedDiff off for this store.`);
     }
 };
 const applyChangesToString = (initialString, stringChanges) => {
@@ -531,6 +643,9 @@ const applyChangesToObject = (initialObject, objectChanges) => {
     let revisedObject = { ...initialObject };
     for (const [type, property, value] of objectChanges) {
         const prop = property;
+        if (prop === "__proto__" || prop === "constructor" || prop === "prototype") {
+            continue;
+        }
         switch (type) {
             case changeType.insert:
             case changeType.update: {
@@ -558,37 +673,103 @@ const applyChanges = (state, changes) => {
     }
     return applyChangesToObject(state, changes);
 };
-const patchState = (oldState, newState) => {
-    const changes = getChanges(oldState, newState);
+const patchState = (oldState, newState, { suppressTopLevelDeleteKeys } = {}) => {
+    let changes = getChanges(oldState, newState);
+    if (suppressTopLevelDeleteKeys !== undefined) {
+        changes = changes.filter(([type, property]) => {
+            return !(type === changeType.delete && suppressTopLevelDeleteKeys.has(property));
+        });
+    }
     if (changes.length === 0) {
         return oldState;
     }
     return applyChanges(oldState, changes);
 };
-const patchStore = (store, newState) => {
+const computeInboundState = (currentState, newState, { syncedKeys, suppressTopLevelDeleteKeys } = {}) => {
+    const patchOptions = { suppressTopLevelDeleteKeys };
+    if (syncedKeys === undefined) {
+        return patchState(currentState, newState, patchOptions);
+    }
+    const current = currentState;
+    const oldSubset = {};
+    for (const key of syncedKeys) {
+        if (isDangerousKey(key)) {
+            continue;
+        }
+        if (key in current && !(current[key] instanceof Function)) {
+            oldSubset[key] = current[key];
+        }
+    }
+    const newSubset = isPlainRecord(newState) ? pickKeys(newState, syncedKeys) : {};
+    const patchedSubset = patchState(oldSubset, newSubset, patchOptions);
+    const next = {};
+    for (const [key, value] of Object.entries(current)) {
+        const isReplaceableSyncedKey = syncedKeys.has(key) && !(value instanceof Function);
+        if (!isReplaceableSyncedKey) {
+            next[key] = value;
+        }
+    }
+    return Object.assign(next, patchedSubset);
+};
+const patchStore = (store, newState, { syncedKeys, suppressTopLevelDeleteKeys } = {}) => {
     const oldState = {
         ...store.getState(),
     };
-    store.setState(patchState(oldState, newState), true);
+    store.setState(computeInboundState(oldState, newState, { syncedKeys, suppressTopLevelDeleteKeys }), true);
 };
 
-const yjsImpl = (doc, name, config, { atomicKeys, disableYText, onLoaded, onObsolete, schemaVersion, yTextKeys, } = {}) => {
-    const map = doc.getMap(name);
-    const middlewareOptions = {
-        atomicKeys,
-        disableYText,
-        onLoaded,
-        onObsolete,
-        schemaVersion,
-        yTextKeys,
+const __scopedDiffDevSampling = { rate: 0.02 };
+const getYjsStoreHandle = (store) => {
+    const handle = store.yjs;
+    if (handle === undefined) {
+        throw new Error("[zustand-middleware-yjs] store has no `yjs` handle — was it created " +
+            "with the yjs middleware?");
+    }
+    return handle;
+};
+const yjsImpl = (doc, name, config, { atomicKeys, disableYText, yTextKeys, onLoaded, onObsolete, schemaVersion, syncedKeys, hydration, scopedDiff, scope, } = {}) => {
+    const rootMap = doc.getMap(name);
+    const scopeKey = scope?.key;
+    const getDataMap = () => {
+        if (scopeKey === undefined) {
+            return rootMap;
+        }
+        const child = rootMap.get(scopeKey);
+        return child instanceof yjs__namespace.Map ? child : undefined;
     };
+    const ensureDataMap = () => {
+        const existing = getDataMap();
+        if (existing !== undefined) {
+            return existing;
+        }
+        const created = new yjs__namespace.Map();
+        rootMap.set(scopeKey, created);
+        return created;
+    };
+    const syncedKeySet = syncedKeys
+        ? new Set(schemaVersion === undefined
+            ? syncedKeys
+            : [...syncedKeys, "__schemaVersion"])
+        : undefined;
     let isObsolete = false;
     return (set, get, api) => {
         let isLoaded = false;
-        if (map.size > 0) {
+        if ((getDataMap()?.size ?? 0) > 0) {
             isLoaded = true;
             onLoaded?.();
         }
+        let isHydrated = false;
+        let resolveHydrated;
+        const hydratedPromise = new Promise((resolve) => {
+            resolveHydrated = resolve;
+        });
+        const markHydrated = () => {
+            if (isHydrated) {
+                return;
+            }
+            isHydrated = true;
+            resolveHydrated();
+        };
         let isOutboundPending = false;
         let batchPreviousState;
         const originalSetState = api.setState;
@@ -596,9 +777,32 @@ const yjsImpl = (doc, name, config, { atomicKeys, disableYText, onLoaded, onObso
             isOutboundPending = false;
             const previousState = batchPreviousState;
             batchPreviousState = undefined;
-            doc.transact(() => {
-                patchSharedType(map, api.getState(), { ...middlewareOptions, previousState });
-            }, api);
+            const sharedOptions = {
+                atomicKeys,
+                disableYText,
+                yTextKeys,
+                syncedKeys: syncedKeySet,
+            };
+            if (scopedDiff && previousState !== undefined) {
+                const state = api.getState();
+                doc.transact(() => {
+                    patchSharedTypeScoped(ensureDataMap(), state, previousState, sharedOptions);
+                }, api);
+                if (isDevEnvironment() && Math.random() < __scopedDiffDevSampling.rate) {
+                    const dataMap = getDataMap();
+                    if (dataMap !== undefined) {
+                        assertScopedDiffConvergence(dataMap, api.getState(), { syncedKeys: syncedKeySet });
+                    }
+                }
+            }
+            else {
+                doc.transact(() => {
+                    patchSharedType(ensureDataMap(), api.getState(), {
+                        ...sharedOptions,
+                        previousState,
+                    });
+                }, api);
+            }
         };
         const scheduleOutbound = (capturedPreviousState) => {
             if (isObsolete) {
@@ -607,7 +811,11 @@ const yjsImpl = (doc, name, config, { atomicKeys, disableYText, onLoaded, onObso
             if (!isOutboundPending) {
                 isOutboundPending = true;
                 batchPreviousState = capturedPreviousState;
-                queueMicrotask(flushOutbound);
+                queueMicrotask(() => {
+                    if (isOutboundPending) {
+                        flushOutbound();
+                    }
+                });
             }
         };
         let initialState = config((partial, replace) => {
@@ -615,34 +823,119 @@ const yjsImpl = (doc, name, config, { atomicKeys, disableYText, onLoaded, onObso
             set(partial, replace);
             scheduleOutbound(previousState);
         }, get, api);
-        if (map.size > 0) {
-            initialState = patchState(initialState, map.toJSON());
+        const declaredDefaultKeys = hydration === "merge-defaults"
+            ? new Set(Object.entries(initialState)
+                .filter(([, value]) => !(value instanceof Function))
+                .map(([key]) => key))
+            : undefined;
+        if (syncedKeys && isDevEnvironment()) {
+            const initialRecord = initialState;
+            for (const key of syncedKeys) {
+                if (!(key in initialRecord)) {
+                    throw new Error(`[zustand-middleware-yjs] syncedKeys entry "${key}" is not a key ` +
+                        `of the initial state of store "${name}". Synced keys must exist ` +
+                        `in the object returned by the state creator (likely a typo — ` +
+                        `the key would otherwise silently never sync).`);
+                }
+                if (initialRecord[key] instanceof Function) {
+                    throw new TypeError(`[zustand-middleware-yjs] syncedKeys entry "${key}" of store ` +
+                        `"${name}" is a function. Functions are never replicated; remove ` +
+                        `it from syncedKeys.`);
+                }
+            }
+        }
+        const creationDataMap = getDataMap();
+        if (creationDataMap !== undefined && creationDataMap.size > 0) {
+            initialState = computeInboundState(initialState, creationDataMap.toJSON(), {
+                syncedKeys: syncedKeySet,
+                suppressTopLevelDeleteKeys: declaredDefaultKeys,
+            });
             api.setState(initialState, true);
+            markHydrated();
         }
         api.setState = (partial, replace) => {
             const previousState = api.getState();
             originalSetState(partial, replace);
             scheduleOutbound(previousState);
         };
+        const handle = {
+            hasHydrated: () => isHydrated,
+            whenHydrated: () => hydratedPromise,
+            markHydrated,
+            flush: () => {
+                if (isOutboundPending) {
+                    flushOutbound();
+                }
+            },
+            isObsolete: () => isObsolete,
+        };
+        api.yjs = handle;
         let isUpdatePending = false;
+        let pendingInboundKeys;
+        let hasPendingInboundFull = false;
         const processBatch = () => {
             isUpdatePending = false;
-            patchStore({
+            const storeForPatch = {
                 ...api,
                 "setState": originalSetState,
-            }, map.toJSON());
+            };
+            const dataMap = getDataMap();
+            if (scopedDiff && !hasPendingInboundFull) {
+                const collected = pendingInboundKeys;
+                pendingInboundKeys = undefined;
+                if (collected === undefined || collected.size === 0) {
+                    return;
+                }
+                const affectedKeys = syncedKeySet
+                    ? new Set([...collected].filter((key) => syncedKeySet.has(key)))
+                    : collected;
+                if (affectedKeys.size === 0) {
+                    return;
+                }
+                const partialMapJson = {};
+                for (const key of affectedKeys) {
+                    if (dataMap?.has(key)) {
+                        const value = dataMap.get(key);
+                        partialMapJson[key] = value instanceof yjs__namespace.AbstractType ? value.toJSON() : value;
+                    }
+                }
+                patchStore(storeForPatch, partialMapJson, {
+                    syncedKeys: affectedKeys,
+                    suppressTopLevelDeleteKeys: declaredDefaultKeys,
+                });
+                markHydrated();
+                return;
+            }
+            pendingInboundKeys = undefined;
+            hasPendingInboundFull = false;
+            patchStore(storeForPatch, dataMap === undefined ? {} : dataMap.toJSON(), {
+                syncedKeys: syncedKeySet,
+                suppressTopLevelDeleteKeys: declaredDefaultKeys,
+            });
+            markHydrated();
         };
-        map.observeDeep((unusedArg, transaction) => {
+        const touchesScope = (events) => {
+            return scopeKey === undefined ||
+                events.some((event) => {
+                    return event.path.length > 0
+                        ? String(event.path[0]) === scopeKey
+                        : event.changes.keys.has(scopeKey);
+                });
+        };
+        rootMap.observeDeep((events, transaction) => {
             if (isObsolete) {
                 return;
             }
             if (schemaVersion !== undefined) {
-                const incomingVersion = map.get("__schemaVersion") || 0;
+                const incomingVersion = rootMap.get("__schemaVersion") || 0;
                 if (incomingVersion > schemaVersion) {
                     isObsolete = true;
                     onObsolete?.(incomingVersion);
                     return;
                 }
+            }
+            if (!touchesScope(events)) {
+                return;
             }
             if (!isLoaded && transaction.origin !== api) {
                 isLoaded = true;
@@ -650,6 +943,37 @@ const yjsImpl = (doc, name, config, { atomicKeys, disableYText, onLoaded, onObso
             }
             if (transaction.origin === api) {
                 return;
+            }
+            if (scopedDiff) {
+                pendingInboundKeys = pendingInboundKeys ?? new Set();
+                const keys = pendingInboundKeys;
+                for (const event of events) {
+                    if (scopeKey === undefined) {
+                        if (event.path.length > 0) {
+                            keys.add(String(event.path[0]));
+                        }
+                        else {
+                            for (const key of event.changes.keys.keys()) {
+                                keys.add(key);
+                            }
+                        }
+                    }
+                    else if (event.path.length === 0) {
+                        if (event.changes.keys.has(scopeKey)) {
+                            hasPendingInboundFull = true;
+                        }
+                    }
+                    else if (String(event.path[0]) === scopeKey) {
+                        if (event.path.length === 1) {
+                            for (const key of event.changes.keys.keys()) {
+                                keys.add(key);
+                            }
+                        }
+                        else {
+                            keys.add(String(event.path[1]));
+                        }
+                    }
+                }
             }
             if (!isUpdatePending) {
                 isUpdatePending = true;
@@ -660,4 +984,6 @@ const yjsImpl = (doc, name, config, { atomicKeys, disableYText, onLoaded, onObso
     };
 };
 
-module.exports = yjsImpl;
+exports.__scopedDiffDevSampling = __scopedDiffDevSampling;
+exports.default = yjsImpl;
+exports.getYjsStoreHandle = getYjsStoreHandle;

@@ -31,7 +31,11 @@ export default defineConfig({
       "name": "CommonJs",
       "file": "dist/yjs.cjs",
       "format": "cjs",
-      "exports": "default",
+      // `named` (was `default`): the middleware default export is now
+      // accompanied by the public named exports `getYjsStoreHandle` and
+      // `__scopedDiffDevSampling`. ESM consumers are unaffected; CJS consumers
+      // reach the middleware via `require("...").default`.
+      "exports": "named",
     }
   ],
   "external": [

@@ -6,7 +6,7 @@ import yjs from ".";
 describe("Fuzz testing", () => {
   // Custom arbitrary for safe JSON values, excluding "unsafe" keys
   const safeString = fc.string().filter((k) =>
-    !["valueOf", "toString", "__proto__", "constructor"].includes(k));
+    !["valueOf", "toString", "__proto__", "constructor", "prototype"].includes(k));
 
   const safeJsonValue = fc.letrec((tie) =>
   ({
