@@ -218,46 +218,53 @@ const isDeepEqualForDiff = (a: unknown, b: unknown): boolean => {
     return false;
   }
 
+  /*
+   * Hot path: this runs for every element of every diffed array and every key
+   * of every diffed record, so the per-field cost matters. `===` is checked
+   * before any type classification (most fields are primitives), and
+   * Object.keys/every are used instead of Object.entries/for-of to avoid
+   * per-field tuple and iterator allocations.
+   */
   if (Array.isArray(a) && Array.isArray(b)) {
     if (a.length !== b.length) {
       return false;
     }
 
-    for (const [index, left] of a.entries()) {
+    return a.every((left, index) => {
       const right = b[index];
-      const isComparableDeep =
-        isDiffable(left) && isDiffable(right) && isSameType(left, right);
 
-      if (isComparableDeep ? !isDeepEqualForDiff(left, right) : left !== right) {
-        return false;
+      if (left === right) {
+        return true;
       }
-    }
 
-    return true;
+      return isDiffable(left) && isDiffable(right) && isSameType(left, right) &&
+        isDeepEqualForDiff(left, right);
+    });
   }
 
   if (isRecord(a) && isRecord(b)) {
-    for (const [property, value] of Object.entries(a)) {
-      if (!(property in b) && !(value instanceof Function)) {
-        return false;
-      }
+    const isEveryAKeyAccounted = Object.keys(a).every((property) =>
+       property in b || a[property] instanceof Function );
+
+    if (!isEveryAKeyAccounted) {
+      return false;
     }
 
-    for (const [property, value] of Object.entries(b)) {
+    return Object.keys(b).every((property) => {
       if (!(property in a)) {
         return false;
       }
 
       const other = a[property];
-      const isComparableDeep =
-        isDiffable(other) && isDiffable(value) && isSameType(other, value);
+      const value = b[property];
 
-      if (isComparableDeep ? !isDeepEqualForDiff(other, value) : other !== value) {
-        return false;
+      if (other === value) {
+        return true;
       }
-    }
 
-    return true;
+      return isDiffable(other) && isDiffable(value) && isSameType(other, value) &&
+        isDeepEqualForDiff(other, value);
+    });
   }
 
   return false;
@@ -274,8 +281,20 @@ const getArrayChanges = (a: unknown[], b: unknown[]): Change[] => {
     const bIndex = index + bOffset;
 
     if (bIndex >= b.length) {
-      changeList.push([changeType.delete, bIndex, undefined]);
-      continue;
+      /*
+       * Trailing-block deletes. Once b is exhausted, no later element of `a`
+       * can match (the lookahead needs b elements), so EVERY remaining element
+       * of `a` is deleted — this branch is terminal. Emit the whole block at
+       * this one fixed index: applying a delete at a fixed index repeatedly
+       * removes consecutive elements (each removal shifts the next one into
+       * place), which is exactly the trailing block, and the fixed index lets
+       * the Y.Array applier coalesce the block into a single range delete
+       * instead of N tombstone-walking single deletes.
+       */
+      for (let rest = index; rest < a.length; rest = rest + 1) {
+        changeList.push([changeType.delete, bIndex, undefined]);
+      }
+      break;
     }
 
     let isMatchFound = false;
@@ -371,10 +390,15 @@ const getRecordChanges = (a: Record<string, unknown>, b: Record<string, unknown>
     if (!(property in a)) {
       changeList.push([changeType.insert, property, value]);
     } else if (isDiffable(a[property]) && isDiffable(value) && isSameType(a[property], value)) {
-      const d = getChanges(a[property], value);
-
-      if (d.length > 0) {
-        changeList.push([changeType.pending, property, d]);
+      /*
+       * Equality prefilter: for unchanged subtrees (the common case in a
+       * full-tree diff), the early-exit comparison avoids building and
+       * discarding a whole tree of empty change lists. isDeepEqualForDiff
+       * matches `getChanges(x, y).length === 0` exactly, so a `false` here
+       * guarantees a non-empty change list.
+       */
+      if (!isDeepEqualForDiff(a[property], value)) {
+        changeList.push([changeType.pending, property, getChanges(a[property], value)]);
       }
     } else if (a[property] !== value) {
       changeList.push([changeType.update, property, value]);

@@ -90,7 +90,85 @@ exact same semantics (including the differ's quirks: function-valued keys
 missing from the new state don't count as differences; non-diffable values
 compare strictly). Arrays of 2k objects diff in ~0.13 ms.
 
-### 4. Full-tree flush on every set() — mitigated by `scopedDiff`
+### 4. Y.Array bulk deletes (quadratic, same mechanism as text)
+
+Shrinking or clearing a large array emitted one `yarray.delete(i, 1)` per
+removed element. Two compounding problems: each single delete walks the item
+list past the tombstones the previous deletes created (quadratic), and the
+differ emitted *trailing* deletes at ascending indices, which defeats any
+batching.
+
+**Fix (two parts):**
+- `getArrayChanges` now emits the trailing-block deletes (the "everything
+  past this point is gone" case — clears, truncations) at one fixed index.
+  Sequential application at a fixed index removes consecutive elements, so
+  the block is expressible as a run.
+- The Y.Array applier coalesces same-index delete runs into a single range
+  `delete(index, count)` (with the legacy end-of-array clamp semantics
+  preserved exactly).
+
+| scenario | before | after |
+|---|---:|---:|
+| clear a 5,000-element Y.Array | **2,265 ms** | **0.95 ms** (~2,400×) |
+| remove 500 elements mid a 5,000-element Y.Array | 366 ms | 175 ms (2×) |
+
+The remaining cost in the mid-array case is a diff-quality limit, not an
+application cost: block removals larger than the differ's 10-element
+lookahead window degrade to element-wise updates (delete+insert per element).
+If your workload removes large mid-array blocks, model the list as an object
+keyed by id, or split it across top-level keys.
+
+### 5. Repeated subtree serialization in nested recursion
+
+`patchSharedType` serialized the whole shared type at the root, then every
+`pending` recursion called `toJSON()` on its child again — the parent's
+snapshot already contained every child subtree, so a change at depth *d* paid
+for the changed path's subtrees once per ancestor. This also halved the value
+of `scopedDiff`, whose per-key snapshot was re-serialized by the recursion.
+
+**Fix:** the already-computed JSON snapshot is threaded down through Y.Map
+pending recursion (`precomputedJson`), so each subtree is serialized exactly
+once per flush. Y.Array pending recursion still re-serializes its (changed)
+elements: earlier sibling inserts/deletes shift positions, so a precomputed
+snapshot cannot be trusted there. A structural test asserts the call count
+(one serialization per level) so regressions are caught without timing.
+
+### 6. Deep-equality cost in full-tree object diffs
+
+Between a map's JSON and the store state no object is ever reference-equal,
+so a full-tree diff pays a structural comparison for every array element and
+record key. Two changes cut that constant: `getRecordChanges` now uses the
+early-exit equality check as a prefilter (unchanged subtrees no longer build
+and discard trees of empty change lists), and the equality helper checks
+primitive `===` before any type classification and avoids per-field tuple
+allocations.
+
+| scenario | before | after |
+|---|---:|---:|
+| update 1 field of one object in a 2,000-object Y.Array | 14.5 ms | 7.4 ms |
+| update 1 of 1,000 nested objects under a single key | 5.5 ms | 3.5 ms |
+| e2e single-key update, 100-key store (full-tree flush) | 9.2 ms | 3.5 ms |
+| e2e inbound full-tree patch, 100-key state | 0.27 ms | 0.09 ms |
+
+### 7. Correctness: inbound array deletes were misapplied
+
+Found while validating the array work: `getArrayChanges` emits delete indices
+in sequential post-application coordinates (the interpretation the Y.Array
+applier uses), but the inbound state applier (`applyChangesToArray`) applied
+all deletes FIRST in descending index order — an original-coordinates
+assumption. Any change list mixing a lookahead delete with trailing deletes
+was corrupted on the store side while the doc side stayed correct: a remote
+peer changing `[1, 2, 3]` to `[2]` patched the local store to `[3]`, silently
+diverging store from doc. The random fuzz suite never caught it because
+arbitrary values rarely produce the overlapping-element shapes that trigger
+lookahead matches.
+
+**Fix:** the inbound applier now applies changes strictly in list order with
+evolving indices — the same interpretation as the Y.Array applier — and a
+fast-check suite with high-collision arrays (where overlaps are common)
+cross-validates both appliers on every run.
+
+### 8. Full-tree flush on every set() — mitigated by `scopedDiff`
 
 The legacy outbound path serializes the **entire** root map
 (`sharedType.toJSON()`) and deep-diffs the entire state on every microtask
@@ -101,10 +179,13 @@ the structural fix:
 
 | scenario | full-tree | scopedDiff |
 |---|---:|---:|
-| single-key update in a 100-key store (outbound flush) | 7.0 ms | 0.22 ms (~30×) |
+| single-key update in a 100-key store (outbound flush) | 3.5 ms | 0.21 ms (~17×) |
 
-The remaining full-tree cost also dropped ~3.7× from fixes 1–3 (25.6 ms →
-7.0 ms), since text keys no longer pay full-window diffs during the tree walk.
+The remaining full-tree cost also dropped ~7× across this work (25.6 ms →
+3.5 ms): text keys no longer pay full-window diffs during the tree walk, each
+subtree serializes once, and unchanged subtrees compare without allocating
+change lists. `scopedDiff` remains the structural fix — O(changed subtree)
+instead of O(total state) per write.
 
 ## Aged-document session (end-to-end)
 
@@ -121,6 +202,24 @@ The remaining full-tree cost also dropped ~3.7× from fixes 1–3 (25.6 ms →
 Latency no longer degrades measurably as this document ages, and the doc/
 network footprint is smaller.
 
+## Aged-object session (end-to-end, no text)
+
+The same shape of session against pure object/array state: 500 edits (nested
+counter bumps, tag-array appends and removals) across 20 sections through the
+real middleware:
+
+| metric | before | after |
+|---|---:|---:|
+| total session time | 82.9 ms | 54.0 ms |
+| mean flush latency (last 25 edits) | 0.157 ms | 0.126 ms |
+| Yjs item count after session | 599 | 599 |
+
+(Item counts are identical by construction — object edits were never
+per-item pathological the way text and array bulk edits were; the win here is
+per-flush diff cost. Encoded byte counts vary ±10% between runs because the
+random Yjs client ID changes varint widths, so they are not comparable
+run-to-run.)
+
 ## Guidance for consumers
 
 - **Enable `scopedDiff: true`** if your store follows Zustand's
@@ -134,6 +233,10 @@ network footprint is smaller.
 - **Batching is already automatic.** Multiple `set()` calls in one tick
   coalesce into one Yjs transaction; multiple inbound transactions in one
   tick coalesce into one store patch.
+- **Large arrays:** appends, single-element edits, clears, and truncations
+  are all cheap. Large *mid-array block removals* (bigger than the differ's
+  10-element lookahead) degrade to element-wise updates — prefer id-keyed
+  objects for collections with heavy mid-list churn.
 - **Long-lived documents:** Yjs garbage-collects tombstone *content* but not
   item metadata. If a document has accumulated years of history you no longer
   need, snapshot the state into a fresh doc (a schema-version bump via
@@ -141,7 +244,14 @@ network footprint is smaller.
 
 ## Regression coverage
 
-`src/text-performance.spec.ts` locks the fixes in structurally (item counts
-per edit, change-list size after trimming) plus fast-check equivalence
-properties for the coalesced application paths, so CI catches
-order-of-magnitude regressions without flaky wall-clock assertions.
+Two structural test suites lock the fixes in without flaky wall-clock
+assertions:
+
+- `src/text-performance.spec.ts` — Y.Text run coalescing (item counts per
+  edit), prefix/suffix trimming (change-list size), plus fast-check
+  equivalence properties for the coalesced text application paths.
+- `src/object-array-patching.spec.ts` — the inbound array-delete correctness
+  fix (explicit cases plus fast-check cross-validation of the state applier
+  against the Y.Array applier with high-collision arrays), Y.Array delete-run
+  coalescing (large-clear ceiling), and precomputed-JSON threading (a
+  `toJSON` call-count spy proving one serialization per subtree per flush).

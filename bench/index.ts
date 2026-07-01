@@ -212,6 +212,142 @@ const makeItems = (count: number): Record<string, unknown>[] =>
 }
 
 /* -------------------------------------------------------------------------
+ * 4b. Object patching: deep nesting, wide subtrees, Y.Array churn
+ * ---------------------------------------------------------------------- */
+
+const makeObjectDocFixture = (state: Record<string, unknown>): {
+  doc: yjs.Doc;
+  map: yjs.Map<unknown>;
+} => {
+  const doc = new yjs.Doc();
+  const map = doc.getMap("store");
+
+  doc.transact(() => {
+    patchSharedType(map, state, { disableYText: true });
+  });
+
+  return { doc, map };
+};
+
+/** Nested state: `depth` levels, each with `siblings` scalar keys + one child. */
+const makeDeepState = (
+  depth: number,
+  siblings: number,
+  leafValue: number
+): Record<string, unknown> => {
+  let node: Record<string, unknown> = { "leaf": leafValue };
+
+  for (let level = depth - 1; level >= 0; level = level - 1) {
+    const wrapped: Record<string, unknown> = { "child": node };
+
+    for (let sibling = 0; sibling < siblings; sibling = sibling + 1) {
+      wrapped[`field${String(sibling)}`] = level * 100 + sibling;
+    }
+    node = wrapped;
+  }
+
+  return node;
+};
+
+{
+  const DEPTH = 12;
+  const before = makeDeepState(DEPTH, 6, 1);
+  const after = makeDeepState(DEPTH, 6, 2);
+
+  record(bench(
+    "patch/deep-map: update leaf at depth 12 (6 siblings per level)",
+    (fixture) => {
+      const { doc, map } = fixture as ReturnType<typeof makeObjectDocFixture>;
+
+      doc.transact(() => {
+        patchSharedType(map, after, { disableYText: true });
+      });
+    },
+    { setup: () => makeObjectDocFixture(before), runs: 10 }
+  ), { depth: DEPTH });
+}
+
+{
+  const WIDE_COUNT = 1_000;
+  const makeWideData = (changedIndex: number): Record<string, unknown> => {
+    const data: Record<string, unknown> = {};
+
+    for (let index = 0; index < WIDE_COUNT; index = index + 1) {
+      data[`entry${String(index)}`] = {
+        "name": `Entry ${String(index)}`,
+        "count": index === changedIndex ? -1 : index,
+        "meta": { "created": index * 1_000, "flags": [index % 2, index % 3] },
+      };
+    }
+
+    return { data };
+  };
+  const before = makeWideData(-10);
+  const after = makeWideData(500);
+
+  record(bench(
+    "patch/wide-map: 1000 nested objects under one key, update one",
+    (fixture) => {
+      const { doc, map } = fixture as ReturnType<typeof makeObjectDocFixture>;
+
+      doc.transact(() => {
+        patchSharedType(map, after, { disableYText: true });
+      });
+    },
+    { setup: () => makeObjectDocFixture(before), runs: 10 }
+  ), { entries: WIDE_COUNT });
+}
+
+{
+  const LIST_SIZE = 5_000;
+  const numbers = Array.from({ length: LIST_SIZE }, (unused, index) => index);
+
+  record(bench(
+    "patch/yarray: clear 5000-element array",
+    (fixture) => {
+      const { doc, map } = fixture as ReturnType<typeof makeObjectDocFixture>;
+
+      doc.transact(() => {
+        patchSharedType(map, { "list": [] }, { disableYText: true });
+      });
+    },
+    { setup: () => makeObjectDocFixture({ "list": numbers }), runs: 3, warmupRuns: 1 }
+  ), { items: LIST_SIZE });
+
+  const shrunk = [...numbers.slice(0, 2_000), ...numbers.slice(2_500)];
+
+  record(bench(
+    "patch/yarray: remove 500 elements mid 5000-element array",
+    (fixture) => {
+      const { doc, map } = fixture as ReturnType<typeof makeObjectDocFixture>;
+
+      doc.transact(() => {
+        patchSharedType(map, { "list": shrunk }, { disableYText: true });
+      });
+    },
+    { setup: () => makeObjectDocFixture({ "list": numbers }), runs: 3, warmupRuns: 1 }
+  ), { items: LIST_SIZE });
+}
+
+{
+  const items = makeItems(ARRAY_SIZE);
+  const changed = items.map((item, index) =>
+    (index === 1_000 ? { ...item, "label": "CHANGED", } : item));
+
+  record(bench(
+    "patch/yarray: update one object field in 2000-element array",
+    (fixture) => {
+      const { doc, map } = fixture as ReturnType<typeof makeObjectDocFixture>;
+
+      doc.transact(() => {
+        patchSharedType(map, { "list": changed }, { disableYText: true });
+      });
+    },
+    { setup: () => makeObjectDocFixture({ "list": items }), runs: 10 }
+  ), { items: ARRAY_SIZE });
+}
+
+/* -------------------------------------------------------------------------
  * 5. End-to-end outbound flush: legacy full-tree diff vs scopedDiff
  * ---------------------------------------------------------------------- */
 
@@ -384,10 +520,123 @@ const runAgedDocSession = (edits: number, window: number): AgedDocReport => {
   };
 };
 
- 
+/**
+ * Aged OBJECT document: a long editing session mutating nested objects and
+ * arrays (no collaborative text at all) through the real middleware.
+ */
+const runAgedObjectSession = (edits: number, window: number): AgedDocReport => {
+  const doc = new yjs.Doc();
+  const editRandom = makeRandom(4321);
+  const SECTION_COUNT = 20;
+
+  interface SectionsState {
+    sections: Record<string, {
+      title: string;
+      counters: Record<string, number>;
+      tags: string[];
+    }>;
+  }
+
+  const makeSections = (): SectionsState => {
+    const sections: SectionsState["sections"] = {};
+
+    for (let index = 0; index < SECTION_COUNT; index = index + 1) {
+      sections[`s${String(index)}`] = {
+        "title": `Section ${String(index)}`,
+        "counters": { "views": 0, "clicks": 0, "shares": 0 },
+        "tags": [`tag${String(index % 5)}`],
+      };
+    }
+
+    return { sections };
+  };
+
+  const store = createStore<SectionsState>(
+    yjsMiddleware(doc, "sections", () => makeSections(), { "disableYText": true })
+  );
+  const handle = getYjsStoreHandle(store);
+
+  let docUpdateBytes = 0;
+
+  doc.on("update", (update: Uint8Array) => {
+    docUpdateBytes = docUpdateBytes + update.byteLength;
+  });
+
+  const counterNames = ["views", "clicks", "shares"];
+  const latencies: number[] = [];
+  const sessionStart = performance.now();
+
+  for (let edit = 0; edit < edits; edit = edit + 1) {
+    const { sections } = store.getState();
+    const sectionKey = `s${String(Math.floor(editRandom() * SECTION_COUNT))}`;
+    const section = sections[sectionKey];
+    const kind = editRandom();
+
+    let nextSection: SectionsState["sections"][string];
+
+    if (kind < 0.7) {
+      // Bump a nested counter (immutable update).
+      const counter = counterNames[Math.floor(editRandom() * counterNames.length)];
+
+      nextSection = {
+        ...section,
+        "counters": { ...section.counters, [counter]: section.counters[counter] + 1 },
+      };
+    } else if (kind < 0.85 || section.tags.length === 0) {
+      // Append a tag.
+      nextSection = {
+        ...section,
+        "tags": [...section.tags, `tag${String(Math.floor(editRandom() * 50))}`],
+      };
+    } else {
+      // Remove a tag.
+      const removeAt = Math.floor(editRandom() * section.tags.length);
+
+      nextSection = {
+        ...section,
+        "tags": section.tags.filter((unused, index) => index !== removeAt),
+      };
+    }
+
+    const start = performance.now();
+
+    store.setState({ "sections": { ...sections, [sectionKey]: nextSection } });
+    handle.flush();
+    latencies.push(performance.now() - start);
+  }
+
+  const totalMs = performance.now() - sessionStart;
+
+  let itemCount = 0;
+
+  doc.store.clients.forEach((clientItems) => {
+    itemCount = itemCount + clientItems.length;
+  });
+
+  const toJsonStart = performance.now();
+
+  doc.getMap("sections").toJSON();
+  const finalToJsonMs = performance.now() - toJsonStart;
+
+  return {
+    edits,
+    "firstWindowMeanMs": mean(latencies.slice(0, window)),
+    "lastWindowMeanMs": mean(latencies.slice(-window)),
+    totalMs,
+    docUpdateBytes,
+    "encodedStateBytes": yjs.encodeStateAsUpdate(doc).byteLength,
+    itemCount,
+    finalToJsonMs,
+  };
+};
+
 console.error("  running aged-doc session (this is the slow one)...");
 
 const agedReport = runAgedDocSession(500, 25);
+
+console.error("  running aged-object session...");
+
+const agedObjectReport = runAgedObjectSession(500, 25);
 
 /* -------------------------------------------------------------------------
  * Report
@@ -410,4 +659,16 @@ console.log(`
 | encoded doc state (bytes) | ${String(agedReport.encodedStateBytes)} |
 | Yjs item count | ${String(agedReport.itemCount)} |
 | final map.toJSON() (ms) | ${agedReport.finalToJsonMs.toFixed(3)} |
+
+## Aged-object session (500 nested-object/array edits, 20 sections, no Y.Text)
+
+| metric | value |
+|---|---:|
+| mean flush latency, first 25 edits (ms) | ${agedObjectReport.firstWindowMeanMs.toFixed(3)} |
+| mean flush latency, last 25 edits (ms) | ${agedObjectReport.lastWindowMeanMs.toFixed(3)} |
+| total session time (ms) | ${agedObjectReport.totalMs.toFixed(1)} |
+| cumulative update payload (bytes) | ${String(agedObjectReport.docUpdateBytes)} |
+| encoded doc state (bytes) | ${String(agedObjectReport.encodedStateBytes)} |
+| Yjs item count | ${String(agedObjectReport.itemCount)} |
+| final map.toJSON() (ms) | ${agedObjectReport.finalToJsonMs.toFixed(3)} |
 `);

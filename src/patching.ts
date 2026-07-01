@@ -21,6 +21,27 @@ export interface PatchOptions extends MappingOptions {
    * synced key replicates fully.
    */
   syncedKeys?: ReadonlySet<string>;
+
+  /**
+   * Already-serialized JSON of the shared type being patched, when the caller
+   * has it (a parent's toJSON() includes every child subtree, so re-serializing
+   * the child during pending recursion doubles the work at every level).
+   * Wrapped in an object so a legitimately-undefined snapshot value stays
+   * distinguishable from "not provided". The snapshot MUST reflect the shared
+   * type's current content — only safe under a stable parent key (Y.Map);
+   * Y.Array pending recursion recomputes because earlier sibling inserts and
+   * deletes shift element positions.
+   */
+  precomputedJson?: { readonly value: unknown };
+}
+
+/**
+ * Internal options for applyChangesToSharedType: additionally carries the
+ * JSON snapshot the change list was computed against, so Y.Map pending
+ * recursion can thread each child's snapshot down instead of re-serializing.
+ */
+interface ApplyChangesOptions extends PatchOptions {
+  sharedTypeJson?: unknown;
 }
 
 const isDangerousKey = (key: string | number): boolean =>
@@ -65,13 +86,14 @@ const pickKeys = (
  * consumers treat a non-number value as length 1 so uncoalesced lists still
  * apply correctly.
  */
-const coalesceTextChanges = (changes: Change[]): Change[] => {
+const coalesceRunChanges = (changes: Change[], isMergingInserts: boolean): Change[] => {
   const coalesced: Change[] = [];
 
   for (const [type, property, value] of changes) {
     const previous = coalesced.length > 0 ? coalesced[coalesced.length - 1] : undefined;
 
     if (
+      isMergingInserts &&
       type === changeType.insert &&
       typeof value === "string" &&
       previous?.[0] === changeType.insert &&
@@ -96,7 +118,18 @@ const coalesceTextChanges = (changes: Change[]): Change[] => {
   return coalesced;
 };
 
-const textDeleteLength = (value: unknown): number =>
+const coalesceTextChanges = (changes: Change[]): Change[] =>
+  { return coalesceRunChanges(changes, true) };
+
+/**
+ * Y.Array changes only merge same-index delete runs (contiguous block
+ * removals and the trailing-block deletes the differ emits at a fixed index).
+ * Inserts are NOT merged: each array insert carries its own element value.
+ */
+const coalesceArrayChanges = (changes: Change[]): Change[] =>
+  { return coalesceRunChanges(changes, false) };
+
+const deleteRunLength = (value: unknown): number =>
    typeof value === "number" ? value : 1 ;
 
 /**
@@ -120,14 +153,20 @@ const applyChangesToSharedType = (
     disableYText = false,
     previousState,
     yTextKeys = [],
-  }: PatchOptions = {}
+    sharedTypeJson,
+  }: ApplyChangesOptions = {}
 ): void => {
   const options = { atomicKeys, disableYText, previousState, yTextKeys };
 
-  // Y.Text edits arrive as per-character changes; apply them as runs instead.
-  const effectiveChanges = sharedType instanceof yjs.Text
-    ? coalesceTextChanges(changes)
-    : changes;
+  // Y.Text edits arrive as per-character changes and Y.Array shrinks as
+  // per-element same-index deletes; apply both as runs instead.
+  let effectiveChanges = changes;
+
+  if (sharedType instanceof yjs.Text) {
+    effectiveChanges = coalesceTextChanges(changes);
+  } else if (sharedType instanceof yjs.Array) {
+    effectiveChanges = coalesceArrayChanges(changes);
+  }
 
   for (const [type, property, value] of effectiveChanges) {
     switch (type) {
@@ -215,13 +254,35 @@ const applyChangesToSharedType = (
           }
         } else if (sharedType instanceof yjs.Array) {
           const index = property as number;
+          const count = deleteRunLength(value);
+          const { length } = sharedType;
 
-          sharedType.delete(sharedType.length <= index
-            ? sharedType.length - 1
-            : index);
+          /*
+           * Range form of the legacy per-op semantics: each single delete
+           * targeted `index` while in range and clamped to the LAST element
+           * once the array had shrunk to (or below) `index`. A run of k
+           * same-index deletes therefore removes min(k, length - index)
+           * consecutive elements at `index`, then trims the tail.
+           */
+          const inRange = index < length ? Math.min(count, length - index) : 0;
+
+          if (inRange > 0) {
+            sharedType.delete(index, inRange);
+          }
+
+          const remaining = count - inRange;
+
+          if (remaining > 0) {
+            const lengthAfter = length - inRange;
+            const trim = Math.min(remaining, lengthAfter);
+
+            if (trim > 0) {
+              sharedType.delete(lengthAfter - trim, trim);
+            }
+          }
         } else if (sharedType instanceof yjs.Text) {
           // Coalesced runs carry their length in the value slot (default 1).
-          sharedType.delete(property as number, textDeleteLength(value));
+          sharedType.delete(property as number, deleteRunLength(value));
         }
 
         break;
@@ -269,11 +330,29 @@ const applyChangesToSharedType = (
               // Plain string diff - set it directly since primitive strings can't be patched incrementally
               sharedType.set(prop, newValue);
             } else {
+              /*
+               * The parent snapshot (which the change list was computed
+               * against) already contains this child's JSON — thread it down
+               * so the recursion never re-serializes the subtree. Safe here
+               * because `prop` is a stable Y.Map key and getRecordChanges
+               * emits at most one change per key, so nothing in this loop has
+               * touched the child since the snapshot was taken.
+               */
+              const childJson = isPlainRecord(sharedTypeJson) && prop in sharedTypeJson
+                ? { "value": sharedTypeJson[prop] }
+                : undefined;
+
               // syncedKeys is NOT threaded into recursion: nesting below a synced key replicates fully.
               patchSharedType(
                 existing as yjs.Map<unknown> | yjs.Array<unknown> | yjs.Text,
                 newValue,
-                { atomicKeys, disableYText, yTextKeys, previousState: childPreviousState }
+                {
+                  atomicKeys,
+                  disableYText,
+                  yTextKeys,
+                  previousState: childPreviousState,
+                  precomputedJson: childJson,
+                }
               );
             }
           }
@@ -349,19 +428,26 @@ export const patchSharedType = (
     previousState,
     yTextKeys,
     syncedKeys,
+    precomputedJson,
   }: PatchOptions = {}
 ): void => {
-  const sharedTypeJson = typeof (sharedType as yjs.Map<unknown>).toJSON === "function"
-    ? (sharedType as yjs.Map<unknown>).toJSON()
+  let sharedTypeJson: unknown;
+
+  if (precomputedJson !== undefined) {
+    sharedTypeJson = precomputedJson.value;
+  } else if (typeof (sharedType as yjs.Map<unknown>).toJSON === "function") {
+    sharedTypeJson = (sharedType as yjs.Map<unknown>).toJSON();
+  } else {
     // eslint-disable-next-line @typescript-eslint/no-base-to-string
-    : (sharedType as yjs.Text).toString();
+    sharedTypeJson = (sharedType as yjs.Text).toString();
+  }
 
   const shouldApplyWhitelist = syncedKeys !== undefined
     && isPlainRecord(sharedTypeJson)
     && isPlainRecord(newState);
 
   const a = shouldApplyWhitelist
-    ? pickKeys(sharedTypeJson, syncedKeys)
+    ? pickKeys(sharedTypeJson as Record<string, unknown>, syncedKeys)
     : sharedTypeJson;
   const b = shouldApplyWhitelist
     ? pickKeys(newState, syncedKeys)
@@ -378,6 +464,7 @@ export const patchSharedType = (
     disableYText,
     previousState,
     yTextKeys,
+    sharedTypeJson: a,
   });
 };
 
@@ -468,7 +555,9 @@ export const patchSharedTypeScoped = (
       sharedType,
       getChanges(a, b),
       b,
-      { atomicKeys, disableYText, yTextKeys, previousState: prevRecord }
+      // Threading `a` lets the pending recursion for this key reuse the
+      // toJSON() snapshot taken above instead of serializing the subtree twice.
+      { atomicKeys, disableYText, yTextKeys, previousState: prevRecord, sharedTypeJson: a }
     );
   }
 };
@@ -559,7 +648,7 @@ const applyChangesToString = (initialString: string, stringChanges: Change[]): s
       case changeType.delete: {
         const idx = index as number;
         const left = revisedString.slice(0, idx);
-        const right = revisedString.slice(idx + textDeleteLength(value));
+        const right = revisedString.slice(idx + deleteRunLength(value));
 
         revisedString = left + right;
         break;
@@ -579,23 +668,17 @@ const applyChangesToString = (initialString: string, stringChanges: Change[]): s
 const applyChangesToArray = (initialArray: unknown[], arrayChanges: Change[]): unknown[] => {
   const revisedArray = [...initialArray];
 
-  // Handle deletions in descending order to avoid index shifts
-  const deletions = [...arrayChanges]
-    .filter(([type]) => type === changeType.delete)
-    // eslint-disable-next-line unicorn/no-array-sort
-    .sort(([, indexA], [, indexB]) => (indexB as number) - (indexA as number));
-
-  for (const [, index] of deletions) {
-    revisedArray.splice(index as number, 1);
-  }
-
-  // Handle other changes in ascending order
-  const others = [...arrayChanges]
-    .filter(([type]) => type !== changeType.delete)
-    // eslint-disable-next-line unicorn/no-array-sort
-    .sort(([, indexA], [, indexB]) => (indexA as number) - (indexB as number));
-
-  for (const [type, index, value] of others) {
+  /*
+   * Changes are applied strictly in list order with evolving indices — the
+   * SAME interpretation applyChangesToSharedType uses when applying this
+   * change list to a Y.Array (getArrayChanges emits indices in sequential
+   * post-application coordinates, not original-array coordinates). The
+   * previous strategy here — all deletes first, in descending index order —
+   * assumed original coordinates and silently corrupted arrays whose change
+   * lists mixed lookahead deletes with trailing deletes (e.g. patching
+   * [1, 2, 3] toward [2] produced [3]), diverging the store from the doc.
+   */
+  for (const [type, index, value] of arrayChanges) {
     const idx = index as number;
 
     switch (type) {
@@ -611,7 +694,12 @@ const applyChangesToArray = (initialArray: unknown[], arrayChanges: Change[]): u
         revisedArray[idx] = applyChanges(revisedArray[idx] as string | unknown[] | Record<string, unknown>, value as Change[]);
         break;
       }
-      case changeType.delete:
+      case changeType.delete: {
+        // Mirror the Y.Array applier's clamp: an out-of-range delete removes
+        // the last element (a no-op on an empty array).
+        revisedArray.splice(revisedArray.length <= idx ? revisedArray.length - 1 : idx, 1);
+        break;
+      }
       case changeType.none:
       default: {
         break;
