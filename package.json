@@ -49,6 +49,7 @@
   "scripts": {
     "lint": "eslint .",
     "test": "jest",
+    "bench": "ts-node -T -P bench/tsconfig.json bench/index.ts",
     "test:watch": "jest --watch",
     "test:debug": "node --inspect-brk ./node_modules/jest/bin/jest.js --runInBand",
     "build": "rollup --config rollup.config.mjs",

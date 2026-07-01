@@ -141,7 +141,7 @@ const pathPositions: InlineInterface[] = [];
   return changeList;
 };
 
-const getChangesText = (a: string, b: string): Change[] => {
+const getChangesTextInner = (a: string, b: string): Change[] => {
   if (!hasCommonSubsequence(a, b)) {
     const deletes = Array.from({ length: a.length }, (): Change => [changeType.delete, 0, undefined]);
     const inserts = Array.from({ length: b.length }, (value, index): Change => [changeType.insert, index, b[index]]);
@@ -154,6 +154,113 @@ const getChangesText = (a: string, b: string): Change[] => {
   const isReverse = m >= n;
 
   return isReverse ? diffTextInternal(b, a, isReverse) : diffTextInternal(a, b, isReverse);
+};
+
+const getChangesText = (a: string, b: string): Change[] => {
+  if (a === b) {
+    return [];
+  }
+
+  /*
+   * Trim the common prefix and suffix before diffing so the O(NP) algorithm
+   * (and its O(m + n) frontier allocations) run only on the edited window.
+   * A small edit inside a large string costs O(edit) instead of O(m + n).
+   * The prefix is untouched by every emitted change, so shifting the change
+   * indices by the prefix length reproduces whole-string coordinates exactly.
+   */
+  const maxPrefix = Math.min(a.length, b.length);
+  let prefix = 0;
+
+  while (prefix < maxPrefix && a[prefix] === b[prefix]) {
+    prefix = prefix + 1;
+  }
+
+  const maxSuffix = maxPrefix - prefix;
+  let suffix = 0;
+
+  while (
+    suffix < maxSuffix &&
+    a[a.length - 1 - suffix] === b[b.length - 1 - suffix]
+  ) {
+    suffix = suffix + 1;
+  }
+
+  const changes = getChangesTextInner(
+    a.slice(prefix, a.length - suffix),
+    b.slice(prefix, b.length - suffix)
+  );
+
+  if (prefix === 0) {
+    return changes;
+  }
+
+  for (const change of changes) {
+    change[1] = (change[1] as number) + prefix;
+  }
+
+  return changes;
+};
+
+/**
+ *
+ * Early-exit deep equality with the exact semantics of
+ * `getChanges(a, b).length === 0` for same-type diffable pairs, without
+ * building change lists. Mirrors getChanges' quirks on purpose: a
+ * function-valued key missing from `b` does not count as a difference, and
+ * non-diffable values (including NaN) compare by strict equality.
+ */
+const isDeepEqualForDiff = (a: unknown, b: unknown): boolean => {
+  if (a === b) {
+    return true;
+  }
+
+  if (typeof a === "string" || typeof b === "string") {
+    return false;
+  }
+
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) {
+      return false;
+    }
+
+    for (const [index, left] of a.entries()) {
+      const right = b[index];
+      const isComparableDeep =
+        isDiffable(left) && isDiffable(right) && isSameType(left, right);
+
+      if (isComparableDeep ? !isDeepEqualForDiff(left, right) : left !== right) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  if (isRecord(a) && isRecord(b)) {
+    for (const [property, value] of Object.entries(a)) {
+      if (!(property in b) && !(value instanceof Function)) {
+        return false;
+      }
+    }
+
+    for (const [property, value] of Object.entries(b)) {
+      if (!(property in a)) {
+        return false;
+      }
+
+      const other = a[property];
+      const isComparableDeep =
+        isDiffable(other) && isDiffable(value) && isSameType(other, value);
+
+      if (isComparableDeep ? !isDeepEqualForDiff(other, value) : other !== value) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  return false;
 };
 
 const getArrayChanges = (a: unknown[], b: unknown[]): Change[] => {
@@ -182,7 +289,7 @@ const getArrayChanges = (a: unknown[], b: unknown[]): Change[] => {
           isDiffable(value) &&
           isDiffable(bValue) &&
           isSameType(value, bValue)
-            ? getChanges(value, bValue).length === 0
+            ? isDeepEqualForDiff(value, bValue)
             : false;
 
         if (isStrictMatch || isDeepMatch) {
@@ -208,7 +315,7 @@ const getArrayChanges = (a: unknown[], b: unknown[]): Change[] => {
           isDiffable(nextA) &&
           isDiffable(b[bIndex]) &&
           isSameType(nextA, b[bIndex])
-            ? getChanges(nextA, b[bIndex]).length === 0
+            ? isDeepEqualForDiff(nextA, b[bIndex])
             : false;
 
         if (isStrictMatch || isDeepMatch) {

@@ -49,6 +49,57 @@ const pickKeys = (
 };
 
 /**
+ *
+ * The text diff emits one change per character: consecutive inserts arrive
+ * with contiguous indices (i, i+1, ...) and consecutive deletes of adjacent
+ * characters arrive with the SAME index (deleting at i shifts the next
+ * character into i). Applying them one at a time is disastrous for Y.Text —
+ * every delete(i, 1) walks the item list past the tombstones the previous
+ * deletes just created (quadratic in the edit size, and worse in an aged doc),
+ * and every 1-char insert allocates its own Yjs item. Coalescing adjacent
+ * changes into runs turns N single-character operations into a handful of
+ * range operations while preserving the exact sequential-application
+ * semantics: [insert, i, "abc"] ≡ [insert, i, "a"], [insert, i+1, "b"],
+ * [insert, i+2, "c"], and [delete, i, 3] ≡ three [delete, i, undefined].
+ * Delete runs carry their length in the (otherwise unused) value slot;
+ * consumers treat a non-number value as length 1 so uncoalesced lists still
+ * apply correctly.
+ */
+const coalesceTextChanges = (changes: Change[]): Change[] => {
+  const coalesced: Change[] = [];
+
+  for (const [type, property, value] of changes) {
+    const previous = coalesced.length > 0 ? coalesced[coalesced.length - 1] : undefined;
+
+    if (
+      type === changeType.insert &&
+      typeof value === "string" &&
+      previous?.[0] === changeType.insert &&
+      typeof previous[1] === "number" &&
+      typeof previous[2] === "string" &&
+      property === previous[1] + previous[2].length
+    ) {
+      previous[2] = previous[2] + value;
+    } else if (
+      type === changeType.delete &&
+      previous?.[0] === changeType.delete &&
+      property === previous[1]
+    ) {
+      previous[2] = (previous[2] as number) + 1;
+    } else if (type === changeType.delete) {
+      coalesced.push([type, property, 1]);
+    } else {
+      coalesced.push([type, property, value]);
+    }
+  }
+
+  return coalesced;
+};
+
+const textDeleteLength = (value: unknown): number =>
+   typeof value === "number" ? value : 1 ;
+
+/**
  * Applies an already-computed change list to a yjs shared type. Extracted from
  * patchSharedType so the scoped-diff path can reuse the exact same
  * insert/update/delete/pending application semantics (including the verbatim
@@ -73,7 +124,12 @@ const applyChangesToSharedType = (
 ): void => {
   const options = { atomicKeys, disableYText, previousState, yTextKeys };
 
-  for (const [type, property, value] of changes) {
+  // Y.Text edits arrive as per-character changes; apply them as runs instead.
+  const effectiveChanges = sharedType instanceof yjs.Text
+    ? coalesceTextChanges(changes)
+    : changes;
+
+  for (const [type, property, value] of effectiveChanges) {
     switch (type) {
       case changeType.insert:
       case changeType.update: {
@@ -164,8 +220,8 @@ const applyChangesToSharedType = (
             ? sharedType.length - 1
             : index);
         } else if (sharedType instanceof yjs.Text) {
-          // A delete operation for text is only ever for a single character.
-          sharedType.delete(property as number, 1);
+          // Coalesced runs carry their length in the value slot (default 1).
+          sharedType.delete(property as number, textDeleteLength(value));
         }
 
         break;
@@ -488,7 +544,9 @@ export const assertScopedDiffConvergence = (
 const applyChangesToString = (initialString: string, stringChanges: Change[]): string => {
   let revisedString = initialString;
 
-  for (const [type, index, value] of stringChanges) {
+  // Apply per-character text changes as runs: one slice per run instead of
+  // one whole-string rebuild per character.
+  for (const [type, index, value] of coalesceTextChanges(stringChanges)) {
     switch (type) {
       case changeType.insert: {
         const idx = index as number;
@@ -501,7 +559,7 @@ const applyChangesToString = (initialString: string, stringChanges: Change[]): s
       case changeType.delete: {
         const idx = index as number;
         const left = revisedString.slice(0, idx);
-        const right = revisedString.slice(idx + 1);
+        const right = revisedString.slice(idx + textDeleteLength(value));
 
         revisedString = left + right;
         break;
