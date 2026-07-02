@@ -494,10 +494,10 @@ describe("getChanges", () => {
       [
         "😀",
         "😁",
+        // The shared high surrogate \uD83D is common-prefix-trimmed, so only
+        // the differing low surrogate is deleted and reinserted.
         [
-          [changeType.delete, 0, undefined],
-          [changeType.delete, 0, undefined],
-          [changeType.insert, 0, "\uD83D"],
+          [changeType.delete, 1, undefined],
           [changeType.insert, 1, "\uDE01"]
         ]
       ],

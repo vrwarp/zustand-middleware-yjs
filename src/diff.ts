@@ -141,7 +141,7 @@ const pathPositions: InlineInterface[] = [];
   return changeList;
 };
 
-const getChangesText = (a: string, b: string): Change[] => {
+const getChangesTextInner = (a: string, b: string): Change[] => {
   if (!hasCommonSubsequence(a, b)) {
     const deletes = Array.from({ length: a.length }, (): Change => [changeType.delete, 0, undefined]);
     const inserts = Array.from({ length: b.length }, (value, index): Change => [changeType.insert, index, b[index]]);
@@ -156,6 +156,120 @@ const getChangesText = (a: string, b: string): Change[] => {
   return isReverse ? diffTextInternal(b, a, isReverse) : diffTextInternal(a, b, isReverse);
 };
 
+const getChangesText = (a: string, b: string): Change[] => {
+  if (a === b) {
+    return [];
+  }
+
+  /*
+   * Trim the common prefix and suffix before diffing so the O(NP) algorithm
+   * (and its O(m + n) frontier allocations) run only on the edited window.
+   * A small edit inside a large string costs O(edit) instead of O(m + n).
+   * The prefix is untouched by every emitted change, so shifting the change
+   * indices by the prefix length reproduces whole-string coordinates exactly.
+   */
+  const maxPrefix = Math.min(a.length, b.length);
+  let prefix = 0;
+
+  while (prefix < maxPrefix && a[prefix] === b[prefix]) {
+    prefix = prefix + 1;
+  }
+
+  const maxSuffix = maxPrefix - prefix;
+  let suffix = 0;
+
+  while (
+    suffix < maxSuffix &&
+    a[a.length - 1 - suffix] === b[b.length - 1 - suffix]
+  ) {
+    suffix = suffix + 1;
+  }
+
+  const changes = getChangesTextInner(
+    a.slice(prefix, a.length - suffix),
+    b.slice(prefix, b.length - suffix)
+  );
+
+  if (prefix === 0) {
+    return changes;
+  }
+
+  for (const change of changes) {
+    change[1] = (change[1] as number) + prefix;
+  }
+
+  return changes;
+};
+
+/**
+ *
+ * Early-exit deep equality with the exact semantics of
+ * `getChanges(a, b).length === 0` for same-type diffable pairs, without
+ * building change lists. Mirrors getChanges' quirks on purpose: a
+ * function-valued key missing from `b` does not count as a difference, and
+ * non-diffable values (including NaN) compare by strict equality.
+ */
+const isDeepEqualForDiff = (a: unknown, b: unknown): boolean => {
+  if (a === b) {
+    return true;
+  }
+
+  if (typeof a === "string" || typeof b === "string") {
+    return false;
+  }
+
+  /*
+   * Hot path: this runs for every element of every diffed array and every key
+   * of every diffed record, so the per-field cost matters. `===` is checked
+   * before any type classification (most fields are primitives), and
+   * Object.keys/every are used instead of Object.entries/for-of to avoid
+   * per-field tuple and iterator allocations.
+   */
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) {
+      return false;
+    }
+
+    return a.every((left, index) => {
+      const right = b[index];
+
+      if (left === right) {
+        return true;
+      }
+
+      return isDiffable(left) && isDiffable(right) && isSameType(left, right) &&
+        isDeepEqualForDiff(left, right);
+    });
+  }
+
+  if (isRecord(a) && isRecord(b)) {
+    const isEveryAKeyAccounted = Object.keys(a).every((property) =>
+       property in b || a[property] instanceof Function );
+
+    if (!isEveryAKeyAccounted) {
+      return false;
+    }
+
+    return Object.keys(b).every((property) => {
+      if (!(property in a)) {
+        return false;
+      }
+
+      const other = a[property];
+      const value = b[property];
+
+      if (other === value) {
+        return true;
+      }
+
+      return isDiffable(other) && isDiffable(value) && isSameType(other, value) &&
+        isDeepEqualForDiff(other, value);
+    });
+  }
+
+  return false;
+};
+
 const getArrayChanges = (a: unknown[], b: unknown[]): Change[] => {
   const changeList: Change[] = [];
   let finalIndices = 0;
@@ -167,8 +281,20 @@ const getArrayChanges = (a: unknown[], b: unknown[]): Change[] => {
     const bIndex = index + bOffset;
 
     if (bIndex >= b.length) {
-      changeList.push([changeType.delete, bIndex, undefined]);
-      continue;
+      /*
+       * Trailing-block deletes. Once b is exhausted, no later element of `a`
+       * can match (the lookahead needs b elements), so EVERY remaining element
+       * of `a` is deleted — this branch is terminal. Emit the whole block at
+       * this one fixed index: applying a delete at a fixed index repeatedly
+       * removes consecutive elements (each removal shifts the next one into
+       * place), which is exactly the trailing block, and the fixed index lets
+       * the Y.Array applier coalesce the block into a single range delete
+       * instead of N tombstone-walking single deletes.
+       */
+      for (let rest = index; rest < a.length; rest = rest + 1) {
+        changeList.push([changeType.delete, bIndex, undefined]);
+      }
+      break;
     }
 
     let isMatchFound = false;
@@ -182,7 +308,7 @@ const getArrayChanges = (a: unknown[], b: unknown[]): Change[] => {
           isDiffable(value) &&
           isDiffable(bValue) &&
           isSameType(value, bValue)
-            ? getChanges(value, bValue).length === 0
+            ? isDeepEqualForDiff(value, bValue)
             : false;
 
         if (isStrictMatch || isDeepMatch) {
@@ -208,7 +334,7 @@ const getArrayChanges = (a: unknown[], b: unknown[]): Change[] => {
           isDiffable(nextA) &&
           isDiffable(b[bIndex]) &&
           isSameType(nextA, b[bIndex])
-            ? getChanges(nextA, b[bIndex]).length === 0
+            ? isDeepEqualForDiff(nextA, b[bIndex])
             : false;
 
         if (isStrictMatch || isDeepMatch) {
@@ -264,10 +390,15 @@ const getRecordChanges = (a: Record<string, unknown>, b: Record<string, unknown>
     if (!(property in a)) {
       changeList.push([changeType.insert, property, value]);
     } else if (isDiffable(a[property]) && isDiffable(value) && isSameType(a[property], value)) {
-      const d = getChanges(a[property], value);
-
-      if (d.length > 0) {
-        changeList.push([changeType.pending, property, d]);
+      /*
+       * Equality prefilter: for unchanged subtrees (the common case in a
+       * full-tree diff), the early-exit comparison avoids building and
+       * discarding a whole tree of empty change lists. isDeepEqualForDiff
+       * matches `getChanges(x, y).length === 0` exactly, so a `false` here
+       * guarantees a non-empty change list.
+       */
+      if (!isDeepEqualForDiff(a[property], value)) {
+        changeList.push([changeType.pending, property, getChanges(a[property], value)]);
       }
     } else if (a[property] !== value) {
       changeList.push([changeType.update, property, value]);
