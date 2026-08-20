@@ -270,11 +270,44 @@ const isDeepEqualForDiff = (a: unknown, b: unknown): boolean => {
   return false;
 };
 
-const getArrayChanges = (a: unknown[], b: unknown[]): Change[] => {
+/**
+ * Options for array diffing.
+ */
+interface ArrayDiffOptions {
+  /** The caller's previous state for the same array (alignment hint). */
+  previousA?: unknown[];
+}
+
+const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOptions = {}): Change[] => {
   const changeList: Change[] = [];
   let finalIndices = 0;
   let bOffset = 0;
   const LOOKAHEAD_WINDOW = 10;
+
+  /*
+   * Beyond the deep-equality window, block shifts are still detectable at
+   * pointer-comparison cost: immutable-update splices (slice/filter/concat)
+   * preserve the identity of the surviving elements, so a head/mid block
+   * removal or insertion larger than the window shows up as the SAME object
+   * reference further along the other side. Without this, e.g. trimming a
+   * 500-element array to its last 300 (a 200-element head removal) degrades
+   * into ~300 element-wise rewrites — hundreds of Yjs items and kilobytes of
+   * update payload for what is really one range delete.
+   *
+   * Two scan modes, both identity-only (never deep equality — that would be
+   * O(n²) in subtree size) and budgeted so arrays sharing no identities
+   * (fully rebuilt every write) stop scanning and keep the legacy behavior:
+   *
+   * - Direct: `a` itself shares references with `b` (state-vs-state diffs).
+   * - Hinted: `a` is a fresh `toJSON()` snapshot (shares nothing with `b`),
+   *   but `previousA` — the caller's previous STATE for the same array —
+   *   does. `previousA` mirrors `a` positionally whenever the doc reflects
+   *   the last flush, so an identity hit in `previousA` proposes a shift
+   *   that ONE deep-equality check against `a` then confirms (or rejects,
+   *   falling back to the legacy element-wise path — concurrent remote
+   *   edits make the confirm fail, never a wrong emit).
+   */
+  let identityScanBudget = Math.max(1_000, 4 * (a.length + b.length));
 
   for (let index = 0; index < a.length; index = index + 1) {
     const value = a[index];
@@ -353,6 +386,112 @@ const getArrayChanges = (a: unknown[], b: unknown[]): Change[] => {
       continue;
     }
 
+    // Extended identity scan (see identityScanBudget above): look past the
+    // deep-equality window for a strict-identity alignment on either side,
+    // and take the shorter shift when both exist.
+    if (identityScanBudget > 0) {
+      const bTarget = b[bIndex];
+      let deleteShift = -1;
+
+      for (
+        let j = index + LOOKAHEAD_WINDOW + 1;
+        j < a.length && identityScanBudget > 0;
+        j = j + 1
+      ) {
+        identityScanBudget = identityScanBudget - 1;
+        if (a[j] === bTarget) {
+          deleteShift = j - index;
+          break;
+        }
+      }
+
+      if (deleteShift === -1 && previousA !== undefined) {
+        // Hinted mode: propose the shift from the previous state's
+        // identities, then confirm the proposal against `a` itself.
+        for (
+          let j = index + LOOKAHEAD_WINDOW + 1;
+          j < previousA.length && identityScanBudget > 0;
+          j = j + 1
+        ) {
+          identityScanBudget = identityScanBudget - 1;
+          if (previousA[j] === bTarget) {
+            if (
+              j < a.length &&
+              isDiffable(a[j]) &&
+              isDiffable(bTarget) &&
+              isSameType(a[j], bTarget) &&
+              isDeepEqualForDiff(a[j], bTarget)
+            ) {
+              deleteShift = j - index;
+            }
+            break;
+          }
+        }
+      }
+
+      let insertShift = -1;
+
+      for (
+        let j = bIndex + LOOKAHEAD_WINDOW + 1;
+        j < b.length && identityScanBudget > 0;
+        j = j + 1
+      ) {
+        identityScanBudget = identityScanBudget - 1;
+        if (b[j] === value) {
+          insertShift = j - bIndex;
+          break;
+        }
+      }
+
+      if (insertShift === -1 && previousA !== undefined && index < previousA.length) {
+        // Hinted mode, insertion side: the current a-element's previous-state
+        // twin found further along b proposes an insert block; one deep
+        // equality against `a` confirms it.
+        const prevTwin = previousA[index];
+
+        if (prevTwin !== undefined || index in previousA) {
+          for (
+            let j = bIndex + LOOKAHEAD_WINDOW + 1;
+            j < b.length && identityScanBudget > 0;
+            j = j + 1
+          ) {
+            identityScanBudget = identityScanBudget - 1;
+            if (b[j] === prevTwin) {
+              if (
+                isDiffable(value) &&
+                isDiffable(b[j]) &&
+                isSameType(value, b[j]) &&
+                isDeepEqualForDiff(value, b[j])
+              ) {
+                insertShift = j - bIndex;
+              }
+              break;
+            }
+          }
+        }
+      }
+
+      if (deleteShift !== -1 && (insertShift === -1 || deleteShift <= insertShift)) {
+        // Mirror of the in-window delete branch with k = deleteShift.
+        for (let deleteIdx = 0; deleteIdx < deleteShift; deleteIdx = deleteIdx + 1) {
+          changeList.push([changeType.delete, bIndex, undefined]);
+        }
+        index = index + (deleteShift - 1);
+        bOffset = bOffset - deleteShift;
+        continue;
+      }
+
+      if (insertShift !== -1) {
+        // Mirror of the in-window insert branch with k = insertShift.
+        for (let insertIdx = 0; insertIdx < insertShift; insertIdx = insertIdx + 1) {
+          changeList.push([changeType.insert, bIndex + insertIdx, b[bIndex + insertIdx]]);
+        }
+        finalIndices = finalIndices + insertShift + 1;
+        bOffset = bOffset + insertShift;
+        continue;
+      }
+    }
+
     if (isDiffable(value) && isDiffable(b[bIndex]) && isSameType(value, b[bIndex])) {
       const currentDiff = getChanges(value, b[bIndex]);
 
@@ -409,14 +548,34 @@ const getRecordChanges = (a: Record<string, unknown>, b: Record<string, unknown>
 };
 
 /**
- * Calculates the changes between two diffable values.
+ * Options for computing changes between two diffable values.
  */
-export const getChanges = (a: Diffable, b: Diffable): Change[] => {
+export interface GetChangesOptions {
+  /**
+   * Optional alignment hint for ARRAY diffs only: the caller's previous
+   * STATE for the same array. When `a` is a fresh `toJSON()` snapshot it
+   * shares no references with `b`, but `previousA` does — letting block
+   * splices larger than the deep-equality lookahead window be detected at
+   * pointer cost and confirmed with one deep equality against `a` (see
+   * getArrayChanges). Ignored for strings and records.
+   */
+  previousA?: unknown;
+}
+
+/**
+ * Calculates the changes between two diffable values.
+ *
+ * @param a - The value to change from (for shared types: their JSON).
+ * @param b - The value to change to (the new state).
+ * @param options - Diff options; see {@link GetChangesOptions} for the
+ * array alignment hint.
+ */
+export const getChanges = (a: Diffable, b: Diffable, { previousA }: GetChangesOptions = {}): Change[] => {
   if (typeof a === "string" && typeof b === "string") {
     return getChangesText(a, b);
   }
   if (Array.isArray(a) && Array.isArray(b)) {
-    return getArrayChanges(a, b);
+    return getArrayChanges(a, b, Array.isArray(previousA) ? { previousA } : {});
   }
   if (isRecord(a) && isRecord(b)) {
     return getRecordChanges(a, b);

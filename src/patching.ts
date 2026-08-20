@@ -502,6 +502,7 @@ export const patchSharedTypeScoped = (
 ): void => {
   const prevRecord: Record<string, unknown> = isPlainRecord(previousState) ? previousState : {};
   const newRecord: Record<string, unknown> = isPlainRecord(newState) ? newState : {};
+  const options = { atomicKeys, disableYText, yTextKeys };
 
   const keys = new Set<string>([...Object.keys(prevRecord), ...Object.keys(newRecord)]);
 
@@ -527,39 +528,150 @@ export const patchSharedTypeScoped = (
       continue;
     }
 
-    /*
-     * Confine the diff to this key's subtree: single-key records on both sides
-     * reuse the exact legacy change computation and application
-     * (insert/update/delete/pending, the previousState DELETE guard, and the
-     * Y.Text↔string repair). A key present in the map but in neither prev nor
-     * new state (a concurrent remote insert) never enters `keys`, so it can
-     * never be deleted here — the same protection the guard gives the legacy
-     * path.
-     */
-    const a: Record<string, unknown> = {};
-
-    if (sharedType.has(key)) {
-      const existing = sharedType.get(key);
-
-      a[key] = existing instanceof yjs.AbstractType ? existing.toJSON() : existing;
-    }
-
-    const b: Record<string, unknown> = {};
-
-    if (key in newRecord) {
-      b[key] = nextValue;
-    }
-
-    // syncedKeys is intentionally NOT forwarded into the per-key application.
-    applyChangesToSharedType(
-      sharedType,
-      getChanges(a, b),
-      b,
-      // Threading `a` lets the pending recursion for this key reuse the
-      // toJSON() snapshot taken above instead of serializing the subtree twice.
-      { atomicKeys, disableYText, yTextKeys, previousState: prevRecord, sharedTypeJson: a }
-    );
+    scopedPatchKey(sharedType, key, prevRecord, newRecord, options);
   }
+};
+
+/**
+ * Patches one key of a Y.Map from `prevRecord[key]` to `newRecord[key]`,
+ * descending recursively through plain-record levels with `Object.is`
+ * pruning — the branch-scoped extension of the scoped diff.
+ *
+ * Why: `scopedDiff` confines the flush to changed TOP-LEVEL keys, but a
+ * store whose hot key holds one large tree (versicle's `progress`:
+ * books × devices × reading sessions) changes that top-level key on every
+ * write, so the "scoped" flush still serialized (`toJSON`) and structurally
+ * walked the ENTIRE subtree per write — O(total state under the key), and a
+ * fresh JSON snapshot shares no references with state, so the deep-equality
+ * prefilter cannot prune. With immutable updates, identity survives exactly
+ * along UNCHANGED branches of the state itself, so prev-vs-next pruning
+ * descends only the changed path(s): O(changed branch) per write.
+ *
+ * Descent rule: recurse only where prev and next are BOTH plain records AND
+ * the doc-side child is an existing Y.Map. Everything else — arrays,
+ * strings and Y.Text (including the mapping-mismatch repair), primitives,
+ * type transitions, and keys the doc does not have yet — falls back to the
+ * confined legacy JSON diff at that node, reusing
+ * insert/update/delete/pending application (and the `previousState` DELETE
+ * guard) verbatim.
+ *
+ * Backfill invariant (why skipped-equal branches are safe): a Y.Map child
+ * the doc contains was either created by this fallback (inserting the FULL
+ * `next` subtree at that moment) or arrived remotely (in which case the
+ * inbound patch made state mirror it). Either way, any branch beneath it
+ * whose value is identity-equal to the previous flush is already in the
+ * doc. A branch the doc lacks entirely is inserted whole by the fallback.
+ * Compared to the legacy per-key JSON diff this also stops resurrecting
+ * nested keys a concurrent remote transaction deleted (the JSON diff saw
+ * "state has it, map doesn't" and re-inserted; identity pruning leaves the
+ * remote delete to the inbound patch).
+ *
+ * @param parentMap - The Y.Map that holds `key`.
+ * @param key - The key to patch.
+ * @param prevRecord - The record `key` lived in at batch start (delete guard).
+ * @param newRecord - The record `key` lives in now.
+ * @param options - Mapping options (atomicKeys / disableYText / yTextKeys).
+ */
+const scopedPatchKey = (
+  parentMap: yjs.Map<unknown>,
+  key: string,
+  prevRecord: Record<string, unknown>,
+  newRecord: Record<string, unknown>,
+  options: MappingOptions
+): void => {
+  const prevValue = prevRecord[key];
+  const nextValue = newRecord[key];
+  const hasInMap = parentMap.has(key);
+  const existing = hasInMap ? parentMap.get(key) : undefined;
+
+  if (
+    (key in prevRecord) &&
+    (key in newRecord) &&
+    Array.isArray(prevValue) &&
+    Array.isArray(nextValue) &&
+    existing instanceof yjs.Array
+  ) {
+    /*
+     * Array leaf with both states in hand: diff the doc's JSON against the
+     * new state WITH the previous state as an identity-alignment hint, so
+     * block splices beyond the differ's lookahead window (e.g. versicle's
+     * readingSessions 500 -> keep-last-300 cap) become one range delete
+     * instead of hundreds of element-wise rewrites. Application semantics
+     * (including previousState threading into nested pending recursion)
+     * match the legacy pending path for this array exactly.
+     */
+    const arrayJson = existing.toJSON() as unknown[];
+
+    applyChangesToSharedType(
+      existing,
+      getChanges(arrayJson, nextValue, { "previousA": prevValue }),
+      nextValue,
+      { ...options, "previousState": prevValue }
+    );
+
+    return;
+  }
+
+  if (
+    (key in prevRecord) &&
+    (key in newRecord) &&
+    isPlainRecord(prevValue) &&
+    isPlainRecord(nextValue) &&
+    existing instanceof yjs.Map
+  ) {
+    const childKeys = new Set<string>([...Object.keys(prevValue), ...Object.keys(nextValue)]);
+
+    for (const childKey of childKeys) {
+      if (isDangerousKey(childKey)) {
+        continue;
+      }
+
+      const prevChild = prevValue[childKey];
+      const nextChild = nextValue[childKey];
+
+      if (prevChild instanceof Function || nextChild instanceof Function) {
+        continue;
+      }
+
+      const hasPresenceChanged = (childKey in prevValue) !== (childKey in nextValue);
+
+      if (!hasPresenceChanged && Object.is(prevChild, nextChild)) {
+        continue;
+      }
+
+      scopedPatchKey(existing, childKey, prevValue, nextValue, options);
+    }
+
+    return;
+  }
+
+  /*
+   * Leaf / fallback: confine the legacy JSON diff to this key. A key present
+   * in the map but in neither prev nor new state (a concurrent remote
+   * insert) never reaches here — the callers' key unions cannot contain it —
+   * and the previousState DELETE guard protects the delete path at every
+   * level exactly as in the legacy scoped flush.
+   */
+  const a: Record<string, unknown> = {};
+
+  if (hasInMap) {
+    a[key] = existing instanceof yjs.AbstractType ? existing.toJSON() : existing;
+  }
+
+  const b: Record<string, unknown> = {};
+
+  if (key in newRecord) {
+    b[key] = nextValue;
+  }
+
+  applyChangesToSharedType(
+    parentMap,
+    getChanges(a, b),
+    b,
+    // Threading `a` lets the pending recursion for this key reuse the
+    // toJSON() snapshot taken above instead of serializing the subtree twice.
+    { ...options, "previousState": prevRecord, "sharedTypeJson": a }
+  );
 };
 
 /**

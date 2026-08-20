@@ -23,6 +23,7 @@ import {
   makeRandom,
   randomText,
 } from "./harness";
+import { runVersicleBench } from "./versicle";
 
 // Deterministic perf runs: disable the DEV-only sampled convergence check so
 // scopedDiff numbers measure the flush itself, not the diagnostic.
@@ -672,3 +673,7 @@ console.log(`
 | Yjs item count | ${String(agedObjectReport.itemCount)} |
 | final map.toJSON() (ms) | ${agedObjectReport.finalToJsonMs.toFixed(3)} |
 `);
+
+console.error("  running versicle-shaped aging scenario...");
+// eslint-disable-next-line no-console
+console.log(`\n${runVersicleBench()}`);
