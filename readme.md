@@ -211,6 +211,12 @@ its own subtree, and inbound batches re-read only the keys named by the
 incoming Yjs events (so untouched keys keep their object identity). This is a
 performance optimization for large stores.
 
+The same reference check continues *inside* a changed key: nested plain-record
+levels are walked child by child and identity-unchanged children are skipped,
+so a write deep inside one branch costs O(changed branch) even when the whole
+domain lives under a single top-level key. Branches the document has not seen
+yet are still written in full.
+
 ```tsx
 const useStore = create(
   yjs(ydoc, "shared", (set) => ({ /* … */ }), { scopedDiff: true })
