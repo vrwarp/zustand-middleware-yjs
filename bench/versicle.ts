@@ -198,7 +198,9 @@ export interface VersicleScaleRow {
   sawtoothMs: number;
   sawtoothBytes: number;
   sawtoothItemDelta: number;
-  inboundMedianMs: number;
+  inboundApplyMedianMs: number;
+  inboundPatchMedianMs: number;
+  hydrationMs: number;
 }
 
 /**
@@ -206,9 +208,9 @@ export interface VersicleScaleRow {
  *
  * @param books - Number of books in the progress tree.
  * @param pageTurns - Timed steady-state page turns.
- * @returns The measured row.
+ * @returns A promise for the measured row.
  */
-export const runVersicleScale = (books: number, pageTurns: number): VersicleScaleRow => {
+export const runVersicleScale = async (books: number, pageTurns: number): Promise<VersicleScaleRow> => {
   const sessionsPerDevice = 300;
   const fixture = makeFixture(books, sessionsPerDevice);
 
@@ -279,19 +281,27 @@ export const runVersicleScale = (books: number, pageTurns: number): VersicleScal
   const sawtoothBytes = median(sawtoothByteSamples);
   const sawtoothItemDelta = median(sawtoothItemDeltas);
 
-  // --- Inbound: a second client receives one steady-state page turn ---
+  /*
+   * --- Inbound: a second client receives one steady-state page turn ---
+   *
+   * The store patch is microtask-batched, so `applyUpdate` alone measures
+   * almost nothing: the observer just collects the affected top-level keys
+   * and schedules. The real work — re-reading the doc and diffing it into
+   * the store — happens on the microtask, so each sample must drain it.
+   */
   const remoteDoc = new yjs.Doc();
 
   yjs.applyUpdate(remoteDoc, yjs.encodeStateAsUpdate(fixture.doc));
 
   /*
-   * Attach a passive middleware-bound store so the inbound applyUpdate
-   * timing includes the observer + patch-scheduling work a real second
-   * client pays. The store patch itself is microtask-batched, so this
-   * synchronous loop measures applyUpdate plus the synchronous observer
-   * cost.
+   * Cold-start hydration: attaching a store to an already-populated document
+   * (every app launch). Timed separately because it is unavoidable O(state)
+   * work — the store must materialize the whole tree — and so acts as the
+   * floor the steady-state numbers should be compared against.
    */
-  createStore<ProgressState>()(
+  const hydrateStart = performance.now();
+
+  const remoteStore = createStore<ProgressState>()(
     yjsMiddleware(
       remoteDoc,
       "progress",
@@ -309,32 +319,49 @@ export const runVersicleScale = (books: number, pageTurns: number): VersicleScal
     )
   );
 
-  const inboundSamples: number[] = [];
+  const hydrationMs = performance.now() - hydrateStart;
+
+  if (Object.keys(remoteStore.getState().progress).length !== books) {
+    throw new Error("hydration did not populate the store");
+  }
+
+  const inboundApplySamples: number[] = [];
+  const inboundPatchSamples: number[] = [];
 
   for (let index = 0; index < pageTurns; index = index + 1) {
     const stateVector = yjs.encodeStateVector(remoteDoc);
+    const bookId = `book-${String(index % books)}`;
 
-    fixture.store.getState().updateReadingSession(`book-${String(index % books)}`, "device-0", 20_000 + turn);
+    fixture.store.getState().updateReadingSession(bookId, "device-0", 20_000 + turn);
     turn = turn + 1;
     fixture.flush();
 
     const update = yjs.encodeStateAsUpdate(fixture.doc, stateVector);
-    const start = performance.now();
+    const before = remoteStore.getState().progress;
+    const applyStart = performance.now();
 
     yjs.applyUpdate(remoteDoc, update);
-    inboundSamples.push(performance.now() - start);
+    inboundApplySamples.push(performance.now() - applyStart);
+
+    // Drain the batching microtask and time the store patch it performs.
+    const patchStart = performance.now();
+
+    await Promise.resolve();
+    inboundPatchSamples.push(performance.now() - patchStart);
+
+    if (remoteStore.getState().progress === before) {
+      throw new Error(`inbound patch did not run for ${bookId}`);
+    }
   }
 
   /*
-   * Sanity (not timed): the remote doc must mirror the source doc. The
-   * middleware's root map is `progress` and the store key inside it is also
-   * `progress`, so the book tree is one level down.
+   * Sanity (not timed): the remote STORE (not just the doc) must mirror the
+   * source. Checking the store proves the inbound patch path actually ran.
    */
-  const remoteTree = (remoteDoc.getMap("progress").toJSON() as { progress?: ProgressTree }).progress ?? {};
-  const remoteBooks = Object.keys(remoteTree).length;
+  const remoteBooks = Object.keys(remoteStore.getState().progress).length;
 
   if (remoteBooks !== books) {
-    throw new Error(`remote doc failed to converge: ${String(remoteBooks)}/${String(books)} books`);
+    throw new Error(`remote store failed to converge: ${String(remoteBooks)}/${String(books)} books`);
   }
 
   return {
@@ -345,32 +372,36 @@ export const runVersicleScale = (books: number, pageTurns: number): VersicleScal
     sawtoothMs,
     sawtoothBytes,
     sawtoothItemDelta,
-    "inboundMedianMs": median(inboundSamples),
+    "inboundApplyMedianMs": median(inboundApplySamples),
+    "inboundPatchMedianMs": median(inboundPatchSamples),
+    hydrationMs,
   };
 };
 
 /**
  * Runs the scenario across library scales and formats a markdown report.
  *
- * @returns The report as a markdown string.
+ * @returns A promise for the report as a markdown string.
  */
-export const runVersicleBench = (): string => {
+export const runVersicleBench = async (): Promise<string> => {
   const rows: VersicleScaleRow[] = [];
 
   for (const books of [10, 40, 120]) {
     console.error(`  running versicle-shaped scale: ${String(books)} books...`);
-    rows.push(runVersicleScale(books, 15));
+     
+    rows.push(await runVersicleScale(books, 15));
   }
 
   const header =
     "| books | live sessions | page-turn flush (ms) | page-turn bytes | " +
-    "sawtooth splice (ms) | sawtooth bytes | sawtooth item delta | inbound apply (ms) |";
-  const divider = "|---:|---:|---:|---:|---:|---:|---:|---:|";
+    "sawtooth splice (ms) | sawtooth bytes | sawtooth item delta | inbound apply (ms) | inbound patch (ms) | cold hydration (ms) |";
+  const divider = "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|";
   const lines = rows.map((row) => {
     return `| ${String(row.books)} | ${String(row.liveSessions)} | ` +
       `${row.pageTurnMedianMs.toFixed(3)} | ${String(row.pageTurnBytes)} | ` +
       `${row.sawtoothMs.toFixed(3)} | ${String(row.sawtoothBytes)} | ` +
-      `${String(row.sawtoothItemDelta)} | ${row.inboundMedianMs.toFixed(3)} |`;
+      `${String(row.sawtoothItemDelta)} | ${row.inboundApplyMedianMs.toFixed(3)} | ` +
+      `${row.inboundPatchMedianMs.toFixed(3)} | ${row.hydrationMs.toFixed(1)} |`;
   });
 
   return [

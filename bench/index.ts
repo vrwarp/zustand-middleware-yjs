@@ -1,4 +1,10 @@
 /*
+ * eslint-disable-next-line is not enough here: ts-node runs this bench as
+ * CommonJS, where top-level await is unavailable, so the final async
+ * section has to be a promise chain.
+ */
+/* eslint-disable unicorn/prefer-top-level-await */
+/*
  * Performance benchmark suite for zustand-middleware-yjs.
  *
  * Focus areas (see docs/performance.md):
@@ -675,5 +681,12 @@ console.log(`
 `);
 
 console.error("  running versicle-shaped aging scenario...");
-// eslint-disable-next-line no-console
-console.log(`\n${runVersicleBench()}`);
+runVersicleBench()
+  .then((report) => {
+    // eslint-disable-next-line no-console
+    console.log(`\n${report}`);
+  })
+  .catch((error: unknown) => {
+    console.error(error);
+    process.exitCode = 1;
+  });

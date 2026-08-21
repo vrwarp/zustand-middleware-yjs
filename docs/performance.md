@@ -257,6 +257,47 @@ fast path; `getChanges(a, b, { previousA })` exposes it directly.
 The 500 → 300 trim now emits one coalesced 200-element range delete plus the
 append, and **removes** items from the document instead of adding them.
 
+### 11. Inbound patches re-read the whole top-level key
+
+The mirror image of §9, on the receiving side, and the larger of the two.
+`observeDeep` hands the middleware the exact path of every remote change, but
+the scoped inbound patch kept only the FIRST segment of that path and re-read
+the entire top-level key: `map.get(key).toJSON()` over the whole tree, then a
+deep diff of that JSON against the whole current state, then a rebuild. For a
+store whose hot key holds one growing tree, that is O(total state) per inbound
+batch — a device pays for its entire library every time another device turns a
+page, and the cost grows forever.
+
+This was invisible in the first pass because the store patch is
+microtask-batched: timing `Y.applyUpdate` measures only the observer
+collecting key names, which is trivially cheap. The benchmark now drains the
+microtask and times the patch itself, which is where the work actually was:
+**202 ms per inbound page turn at 120 books.**
+
+**Fix:** keep the whole event path, not its first segment, and reconcile at
+that path. `computeInboundStateForPaths` reads the doc only at each changed
+path, diffs it against the state value at the same path with the same
+`patchState` call as before, and rebuilds the spine above it with structural
+sharing — so untouched siblings keep their object identity (better referential
+stability than rebuilding the whole top-level value, which is what the old
+path did on every remote change).
+
+Safety comes from being conservative about when the fast route applies:
+
+- **Any shallow event in the batch disables it.** A top-level key being
+  added, replaced or deleted is only visible at that level, so such a batch
+  takes the original key-scoped route for all of its changes.
+- **A missing branch escalates rather than skipping.** If a named path is
+  absent on either side, `computeInboundStateForPaths` returns `undefined`
+  and the caller falls back to the key-scoped patch for the whole batch.
+  Dropping the path instead would silently lose a change — the one failure
+  mode that would not show up as a crash.
+- **`syncedKeys` still gates the first segment,** so a deep change under a
+  key this store does not replicate is ignored exactly as before.
+
+Like the key-scoped path it replaces, this reconciles what the events named
+rather than the whole subtree — one level deeper, but the same assumption.
+
 ## Downstream-shaped aging scenario (one hot top-level key)
 
 `bench/versicle.ts` models the shape §9 and §10 were found in: a single
@@ -289,9 +330,35 @@ The sawtooth trim, at 120 books:
 
 The item delta is the durable part: the trim used to *grow* the document by
 244 items each time it fired, and now shrinks it (the range delete lets Yjs
-merge the removed run). Inbound apply on a second client also improved at
-every scale (1.05–1.49 ms → 0.21–0.30 ms), since the patch path is scoped the
-same way.
+merge the removed run).
+
+Inbound, on the second client receiving those page turns (§11). `applyUpdate`
+and the store patch are timed separately because the patch is
+microtask-batched — timing only `applyUpdate`, as this benchmark first did,
+measures the observer and misses all of the work:
+
+| books | inbound patch, before | after |
+|---:|---:|---:|
+| 10 | 10.9 ms | 0.75 ms |
+| 40 | 51.9 ms | 0.64 ms |
+| 120 | 202.5 ms | 0.78 ms |
+
+Also flat in library size, and the larger of the two wins: a page turn on one
+device used to freeze every other device's main thread for a fifth of a
+second.
+
+### The remaining floor: cold-start hydration
+
+Attaching a store to an already-populated document — every app launch — is
+11.6 / 40.3 / 130.2 ms at 10 / 40 / 120 books. This one is inherent and is
+NOT a bug: the store has to materialize the whole tree, and `toJSON()` over
+the document dominates (the diff on top of it is only O(top-level branches),
+since a branch absent from the initial state is inserted whole rather than
+descended). It is reported as a column so that steady-state regressions stay
+distinguishable from this unavoidable startup cost. Reducing it would mean
+not materializing the whole tree at startup — a consumer-side decision (bind
+a narrower store, or split the domain across documents), not something the
+middleware can do on its own.
 
 ## Aged-document session (end-to-end)
 
@@ -359,7 +426,7 @@ run-to-run.)
 
 ## Regression coverage
 
-Three structural test suites lock the fixes in without flaky wall-clock
+Four structural test suites lock the fixes in without flaky wall-clock
 assertions:
 
 - `src/text-performance.spec.ts` — Y.Text run coalescing (item counts per
@@ -377,3 +444,13 @@ assertions:
   sequences, hinted splice detection (one delete run, zero rewrites), hint
   *rejection* when the doc diverged from the previous state, and an
   end-to-end sawtooth asserting the trim stays under 1 KB of update payload.
+- `src/inbound-path-scoped.spec.ts` — the §11 fix: a `toJSON` spy proving no
+  sibling branch (and not the top-level map) is serialized during a deep
+  inbound patch, sibling object identity across a remote change, nested
+  deletes, top-level additions and mixed batches taking the escalation route,
+  the `syncedKeys` gate, the escalation contract of
+  `computeInboundStateForPaths` (missing branch on either side, dangerous
+  first segment), `minimizeInboundPaths` segment-wise coverage, and a
+  fast-check property running arbitrary remote write sequences through both a
+  path-scoped and a key-scoped receiver and asserting they end up identical
+  to each other and to the sender.
