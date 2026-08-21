@@ -1021,3 +1021,210 @@ export const patchStore = <S>(
     true // Replace with the patched state.
   );
 };
+
+/** A store-relative path to a changed node: top-level key, then descendants. */
+export type InboundPath = readonly (string | number)[];
+
+/**
+ * Reads the JSON of the value at `path` inside a Y.Map, without serializing
+ * anything outside it. Returns the `absent` sentinel when any step of the
+ * path does not exist (or crosses a non-container), which tells the caller
+ * to escalate the patch to the parent — the level at which the removal is
+ * actually visible as a missing key.
+ */
+const absent = Symbol("absent");
+
+const readDocJsonAtPath = (dataMap: yjs.Map<unknown>, path: InboundPath): unknown => {
+  let node: unknown = dataMap;
+
+  for (const step of path) {
+    if (node instanceof yjs.Map) {
+      const key = String(step);
+
+      if (!node.has(key)) {
+        return absent;
+      }
+      node = node.get(key);
+    } else if (node instanceof yjs.Array) {
+      const index = Number(step);
+
+      if (!Number.isInteger(index) || index < 0 || index >= node.length) {
+        return absent;
+      }
+      node = node.get(index);
+    } else {
+      return absent;
+    }
+  }
+
+  return node instanceof yjs.AbstractType ? node.toJSON() : node;
+};
+
+/** Reads the value at `path` in plain state, or `absent`. */
+const readStateAtPath = (state: unknown, path: InboundPath): unknown => {
+  let node: unknown = state;
+
+  for (const step of path) {
+    if (isPlainRecord(node)) {
+      const key = String(step);
+
+      if (!(key in node)) {
+        return absent;
+      }
+      node = node[key];
+    } else if (Array.isArray(node)) {
+      const index = Number(step);
+
+      if (!Number.isInteger(index) || index < 0 || index >= node.length) {
+        return absent;
+      }
+      node = node[index];
+    } else {
+      return absent;
+    }
+  }
+
+  return node;
+};
+
+/**
+ * Returns a copy of `state` with `value` at `path`, sharing every object
+ * that is not on the path. Containers along the spine are copied in kind
+ * (array vs record) so array-typed levels stay arrays.
+ */
+const setStateAtPath = (state: unknown, path: InboundPath, value: unknown): unknown => {
+  if (path.length === 0) {
+    return value;
+  }
+
+  const [step, ...rest] = path;
+
+  if (Array.isArray(state)) {
+    const index = Number(step);
+    const copy = [...state];
+
+    copy[index] = setStateAtPath(state[index], rest, value);
+
+    return copy;
+  }
+
+  const record = isPlainRecord(state) ? state : {};
+  const key = String(step);
+
+  if (isDangerousKey(key)) {
+    return state;
+  }
+
+  return { ...record, [key]: setStateAtPath(record[key], rest, value) };
+};
+
+/**
+ * Drops any path that a shallower collected path already covers, so a branch
+ * is reconciled once. `['a','b']` covers `['a','b','c']`; `['a','bb']` does
+ * not cover `['a','b']` (segment-wise comparison, not string prefix).
+ */
+export const minimizeInboundPaths = (paths: readonly InboundPath[]): InboundPath[] => {
+  const sorted = [...paths];
+
+  sorted.sort((left, right) => left.length - right.length);
+
+  const kept: InboundPath[] = [];
+
+  for (const path of sorted) {
+    const isCovered = kept.some((candidate) =>
+      { return candidate.length <= path.length &&
+      candidate.every((step, index) => String(step) === String(path[index])) });
+
+    if (!isCovered) {
+      kept.push(path);
+    }
+  }
+
+  return kept;
+};
+
+/**
+ * Path-scoped inbound patch: reconciles ONLY the branches named by `paths`
+ * (each at least two segments deep) instead of re-reading and re-diffing a
+ * whole top-level key.
+ *
+ * Why: `observeDeep` already hands us the exact path of every remote change,
+ * but the scoped inbound patch threw all but the first segment away and
+ * re-read the entire top-level key. For a store whose hot key holds one
+ * large tree, that is O(total state) per inbound batch — the receiving
+ * device pays for its whole library on every remote page turn, and the cost
+ * grows forever. Patching at the event's own path makes it O(changed
+ * branch).
+ *
+ * Semantics match the top-level patch for the branches it touches: the value
+ * at each path is reconciled with the same `patchState` diff, and the spine
+ * above it is rebuilt with structural sharing, so untouched siblings keep
+ * their object identity (better referential stability than rebuilding the
+ * whole top-level value, which is what the caller did before).
+ *
+ * The caller must only pass paths that Yjs events named. Like the key-scoped
+ * path it replaces, this reconciles what changed rather than the whole
+ * subtree — one level deeper, but the same assumption.
+ *
+ * Returns `undefined` when a path cannot be reconciled in isolation — the
+ * branch is missing on one side, so the change is only visible at a level
+ * this call was not given. Reconciling the rest and dropping that path would
+ * silently lose the change, so the caller must fall back to the key-scoped
+ * patch for the whole batch instead. (Adding or removing a branch normally
+ * also raises a shallower event, which makes the caller take that route
+ * before ever reaching this function.).
+ *
+ * @param currentState - The current store state.
+ * @param dataMap - The Y.Map the store is bound to.
+ * @param paths - Store-relative paths of the changed nodes, each at least two segments long.
+ * @param options - Inbound options; `syncedKeys` gates the first segment.
+ * @returns The next state, `currentState` when nothing changed, or
+ * `undefined` when the caller must fall back.
+ */
+export const computeInboundStateForPaths = <T>(
+  currentState: T,
+  dataMap: yjs.Map<unknown>,
+  paths: readonly InboundPath[],
+  { syncedKeys }: InboundStateOptions = {}
+): T | undefined => {
+  let next: unknown = currentState;
+
+  for (const path of minimizeInboundPaths(paths)) {
+    if (path.length < 2 || isDangerousKey(String(path[0]))) {
+      return undefined;
+    }
+    if (syncedKeys !== undefined && !syncedKeys.has(String(path[0]))) {
+      // Not replicated into this store: correctly ignored, not an escalation.
+      continue;
+    }
+
+    const docValue = readDocJsonAtPath(dataMap, path);
+    const stateValue = readStateAtPath(next, path);
+
+    if (docValue === absent || stateValue === absent) {
+      return undefined;
+    }
+
+    const patched = isDiffableState(stateValue) && isDiffableState(docValue) &&
+      isSameShape(stateValue, docValue)
+      ? patchState(stateValue, docValue)
+      : docValue;
+
+    if (!Object.is(patched, stateValue)) {
+      next = setStateAtPath(next, path, patched);
+    }
+  }
+
+  return next as T;
+};
+
+const isDiffableState = (value: unknown): boolean =>
+  { return typeof value === "string" || (typeof value === "object" && value !== null) };
+
+const isSameShape = (a: unknown, b: unknown): boolean => {
+  if (typeof a === "string" && typeof b === "string") {
+    return true;
+  }
+
+  return (Array.isArray(a) && Array.isArray(b)) || (isPlainRecord(a) && isPlainRecord(b));
+};

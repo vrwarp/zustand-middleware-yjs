@@ -7,6 +7,8 @@ import { isDevEnvironment } from "./env";
 import {
   assertScopedDiffConvergence,
   computeInboundState,
+  computeInboundStateForPaths,
+  type InboundPath,
   patchSharedType,
   patchSharedTypeScoped,
   patchStore,
@@ -554,8 +556,30 @@ const yjsImpl: YjsImpl = <S>(
     let pendingInboundKeys: Set<string> | undefined;
     let hasPendingInboundFull = false;
 
+    /*
+     * Full store-relative paths of the changed nodes in this batch, when
+     * every event in it named one at least two segments deep. Yjs already
+     * tells us exactly which branch changed; keeping the whole path lets the
+     * patch reconcile that branch instead of re-reading the entire
+     * top-level key. Cleared (and the batch falls back to the key-scoped
+     * path) as soon as any event names a top-level key directly.
+     */
+    let pendingInboundPaths: InboundPath[] | undefined;
+    let hasShallowInboundEvent = false;
+
     const processBatch = () => {
       isUpdatePending = false;
+
+      /*
+       * Take this batch's deep-path accumulators up front so every exit below
+       * leaves a clean slate: a leftover shallow flag would keep forcing the
+       * slow route on later batches that do not need it.
+       */
+      const deepPaths = pendingInboundPaths;
+      const hasShallowEvent = hasShallowInboundEvent;
+
+      pendingInboundPaths = undefined;
+      hasShallowInboundEvent = false;
 
       const storeForPatch = {
         ...api,
@@ -582,6 +606,31 @@ const yjsImpl: YjsImpl = <S>(
 
         if (affectedKeys.size === 0) {
           return;
+        }
+
+        /*
+         * Deep-path fast route: every event in this batch named a branch at
+         * least two segments below the store root, so only those branches
+         * need reconciling. Avoids serializing and diffing the whole
+         * top-level value, which is O(total state) per inbound batch.
+         */
+        if (!hasShallowEvent && deepPaths !== undefined && dataMap !== undefined) {
+          const currentState = storeForPatch.getState() as Record<string, unknown>;
+          const nextState = computeInboundStateForPaths(currentState, dataMap, deepPaths, {
+            syncedKeys: affectedKeys,
+          });
+
+          // `undefined` = a named branch is missing on one side, so the
+          // change is only visible above these paths: fall through to the
+          // key-scoped patch rather than dropping it.
+          if (nextState !== undefined) {
+            if (!Object.is(nextState, currentState)) {
+              originalSetState(nextState as never, true);
+            }
+            markHydrated(); // hydration source (b): first applied inbound batch
+
+            return;
+          }
         }
 
         const partialMapJson: Record<string, unknown> = {};
@@ -672,14 +721,33 @@ const yjsImpl: YjsImpl = <S>(
         pendingInboundKeys = pendingInboundKeys ?? new Set<string>();
         const keys = pendingInboundKeys;
 
+        pendingInboundPaths = pendingInboundPaths ?? [];
+
+        const paths = pendingInboundPaths;
+
+        /*
+         * `event.path` is relative to the ROOT map, so under `scope` the
+         * store-relative path is the tail after the scope segment. A path of
+         * two or more store-relative segments identifies a branch the
+         * path-scoped patch can reconcile on its own; anything shallower
+         * (a top-level key added, replaced or deleted) still needs the
+         * key-scoped route, which reconciles that whole key.
+         */
         for (const event of events) {
           if (scopeKey === undefined) {
             if (event.path.length > 0) {
               keys.add(String(event.path[0]));
+
+              if (event.path.length >= 2) {
+                paths.push([...event.path]);
+              } else {
+                hasShallowInboundEvent = true;
+              }
             } else {
               for (const key of event.changes.keys.keys()) {
                 keys.add(key);
               }
+              hasShallowInboundEvent = true;
             }
           } else if (event.path.length === 0) {
             // The scoped child itself was inserted/replaced/deleted on the root
@@ -692,8 +760,15 @@ const yjsImpl: YjsImpl = <S>(
               for (const key of event.changes.keys.keys()) {
                 keys.add(key);
               }
+              hasShallowInboundEvent = true;
             } else {
               keys.add(String(event.path[1]));
+
+              if (event.path.length >= 3) {
+                paths.push(event.path.slice(1));
+              } else {
+                hasShallowInboundEvent = true;
+              }
             }
           }
         }
