@@ -1,5 +1,4 @@
 import * as yjs from "yjs";
-import { type Change, changeType } from "./types";
 
 /**
  * Options for mapping values to Yjs types.
@@ -138,49 +137,4 @@ export const objectToYMap = (
  */
 export const yMapToObject = (ymap: yjs.Map<unknown>): Record<string, unknown> => {
   return ymap.toJSON() as Record<string, unknown>;
-};
-
-/**
- * Converts a Yjs shared type to its JSON representation as a list of changes.
- *
- * @param ytype - The Yjs shared type to convert.
- * @returns A list of changes representing the Yjs shared type's contents.
- */
-export const yTypeToChanges = (
-  ytype: yjs.Map<unknown> | yjs.Array<unknown> | yjs.Text
-): Change[] => {
-  if (ytype instanceof yjs.Text) {
-    // eslint-disable-next-line @typescript-eslint/no-base-to-string
-    return [[changeType.insert, 0, ytype.toString()]];
-  }
-
-  if (ytype instanceof yjs.Array) {
-    return ytype.map((value, index) => {
-      if (
-        value instanceof yjs.Map ||
-        value instanceof yjs.Array ||
-        value instanceof yjs.Text
-      ) {
-        return [changeType.pending, index, yTypeToChanges(value)];
-      }
-
-      return [changeType.insert, index, value];
-    });
-  }
-
-  const entries = Object.entries(ytype.toJSON() as Record<string, unknown>);
-
-  return entries.map(([key, value]) => {
-    const yValue = ytype.get(key);
-
-    if (
-      yValue instanceof yjs.Map ||
-      yValue instanceof yjs.Array ||
-      yValue instanceof yjs.Text
-    ) {
-      return [changeType.pending, key, yTypeToChanges(yValue)];
-    }
-
-    return [changeType.insert, key, value];
-  });
 };
