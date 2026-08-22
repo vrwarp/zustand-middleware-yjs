@@ -1,14 +1,20 @@
 {
   "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
-  "_comment": "Mutation testing config. `npm run test:mutation` runs the full suite; CI runs the same thing and fails under the thresholds below.",
+  "_comment": "Mutation testing config. `npm run test:mutation` runs the full suite; CI runs the same thing weekly and fails under the break threshold. break=80 is a ratchet: the score was 74.76% before the guard and rare-branch tests landed and is 80.95% now, so it may be raised but must not be lowered.",
   "packageManager": "npm",
   "testRunner": "jest",
   "jest": {
     "projectType": "custom",
     "configFile": "jest.config.ts"
   },
-  "reporters": ["html", "clear-text", "progress"],
-  "htmlReporter": { "fileName": "reports/mutation/index.html" },
+  "reporters": [
+    "html",
+    "clear-text",
+    "progress"
+  ],
+  "htmlReporter": {
+    "fileName": "reports/mutation/index.html"
+  },
   "coverageAnalysis": "perTest",
   "concurrency": 3,
   "timeoutMS": 20000,
@@ -16,7 +22,11 @@
     "src/**/*.ts",
     "!src/**/*.spec.ts"
   ],
-  "thresholds": { "high": 90, "low": 80, "break": 0 },
+  "thresholds": {
+    "high": 90,
+    "low": 80,
+    "break": 80
+  },
   "tempDirName": ".stryker-tmp",
   "cleanTempDir": true
 }
