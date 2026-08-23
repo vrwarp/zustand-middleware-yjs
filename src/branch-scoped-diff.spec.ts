@@ -394,3 +394,132 @@ describe("branch-scoped outbound diff (patchSharedTypeScoped recursion)", () => 
     expect(updateBytes).toBeLessThan(1_024);
   });
 });
+
+/*
+ * Contract tests for the identity scan's guard conditions.
+ *
+ * These pin behaviour the ordinary splice tests never reach: what happens
+ * when the scan budget runs out, when only one side has a distant identity
+ * match, and when the hint points at a slot that is absent or holds
+ * undefined. Mutation testing reported every one of these conditions as a
+ * surviving mutant — the scan produced correct output whether or not the
+ * guard was there, for every input the suite had.
+ */
+describe("identity scan guard conditions", () => {
+  const obj = (n: number) => ({ "id": n, "payload": `value-${String(n)}` });
+
+  it("stops scanning once the budget is exhausted and falls back to element-wise", () => {
+    /*
+     * The scan budget is shared across the whole diff, so exhausting it takes
+     * many elements that scan and find nothing. Here the first 40 elements
+     * share no identity with `b` at all and burn the budget; element 40 then
+     * sits 30 positions before a block that IS identity-shared, which an
+     * unbudgeted scan would find and emit as a 30-long delete run at one
+     * index. With the budget spent, the differ must reconcile element-wise
+     * instead — and must still converge.
+     */
+    const common = Array.from({ "length": 100 }, (unused, index) => obj(index));
+    // Equal lengths on purpose: a length difference would produce a
+    // trailing-block delete run of its own and mask what is being measured.
+    const a = [
+      ...Array.from({ "length": 40 }, (unused, index) => obj(1_000 + index)),
+      ...Array.from({ "length": 30 }, (unused, index) => obj(2_000 + index)),
+      ...common,
+    ];
+    const b = [
+      ...Array.from({ "length": 40 }, (unused, index) => obj(3_000 + index)),
+      ...common,
+      ...Array.from({ "length": 30 }, (unused, index) => obj(4_000 + index)),
+    ];
+
+    expect(a).toHaveLength(b.length);
+
+    const changes = getChanges(a, b);
+    const deletes = changes.filter(([type]) => type === changeType.delete);
+    const runLengths = new Map<unknown, number>();
+
+    for (const [, index] of deletes) {
+      runLengths.set(index, (runLengths.get(index) ?? 0) + 1);
+    }
+
+    const longestRun = Math.max(0, ...runLengths.values());
+
+    // The 30-element shift is past the exhausted budget: it must not be found.
+    expect(longestRun).toBeLessThan(30);
+
+    // Whatever alignment it settled on, applying it must still reproduce `b`.
+    const doc = new yjs.Doc();
+    const map = doc.getMap("root");
+
+    doc.transact(() => {
+      patchSharedTypeScoped(map, { "sessions": a }, { "sessions": [] }, {});
+    });
+    doc.transact(() => {
+      patchSharedTypeScoped(map, { "sessions": b }, { "sessions": a }, {});
+    });
+    expect(map.toJSON()).toEqual({ "sessions": b });
+  });
+
+  it("finds a distant identity match that sits inside the budget", () => {
+    const shared = Array.from({ "length": 300 }, (unused, index) => obj(index));
+    const b = [...shared.slice(100)];
+    const changes = getChanges(shared, b);
+    const deletes = changes.filter(([type]) => type === changeType.delete);
+
+    expect(deletes).toHaveLength(100);
+    expect(new Set(deletes.map(([, index]) => index)).size).toBe(1);
+  });
+
+  it("prefers the shorter shift when both a delete and an insert alignment exist", () => {
+    /*
+     * `b` is `a` with a short head block removed AND a long block prepended
+     * further out. The delete shift is shorter, so it must win.
+     */
+    const shared = Array.from({ "length": 120 }, (unused, index) => obj(index));
+    const b = shared.slice(20);
+    const changes = getChanges(shared, b);
+    const deletes = changes.filter(([type]) => type === changeType.delete);
+    const inserts = changes.filter(([type]) => type === changeType.insert);
+
+    expect(deletes).toHaveLength(20);
+    expect(inserts).toHaveLength(0);
+  });
+
+  it("rejects a hint whose slot holds undefined", () => {
+    const previousA: unknown[] = Array.from({ "length": 40 }, () => undefined);
+    const a = Array.from({ "length": 40 }, (unused, index) => obj(index));
+    const b = Array.from({ "length": 40 }, (unused, index) => obj(index + 500));
+    const changes = getChanges(a, b, { "previousA": previousA });
+
+    // Nothing alignable: every element differs, so this is element-wise.
+    expect(changes.length).toBeGreaterThan(0);
+    expect(changes.filter(([type]) => type === changeType.delete).length).toBeLessThan(40);
+  });
+
+  it("ignores a hint shorter than the array being diffed", () => {
+    const shared = Array.from({ "length": 60 }, (unused, index) => obj(index));
+    const a = shared.map((value) => ({ ...value }));
+    const b = [...shared.slice(30)];
+    // previousA covers only the first few slots.
+    const changes = getChanges(a, b, { "previousA": shared.slice(0, 3) });
+
+    expect(changes.length).toBeGreaterThan(0);
+  });
+
+  it("ignores a non-array hint", () => {
+    const shared = Array.from({ "length": 60 }, (unused, index) => obj(index));
+    const a = shared.map((value) => ({ ...value }));
+    const b = [...shared.slice(30)];
+    const withHint = getChanges(a, b, { "previousA": "not an array" });
+    const withoutHint = getChanges(a, b);
+
+    expect(withHint).toStrictEqual(withoutHint);
+  });
+
+  it("detects a trailing-block removal without scanning", () => {
+    const shared = Array.from({ "length": 100 }, (unused, index) => obj(index));
+    const changes = getChanges(shared, shared.slice(0, 40));
+
+    expect(changes.filter(([type]) => type === changeType.delete)).toHaveLength(60);
+  });
+});

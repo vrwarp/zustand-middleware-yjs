@@ -53,7 +53,8 @@
     "test:watch": "jest --watch",
     "test:debug": "node --inspect-brk ./node_modules/jest/bin/jest.js --runInBand",
     "build": "rollup --config rollup.config.mjs",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "test:mutation": "stryker run"
   },
   "devDependencies": {
     "@commitlint/cli": "^12.1.4",
@@ -63,6 +64,8 @@
     "@rollup/plugin-node-resolve": "^13.0.0",
     "@rollup/plugin-typescript": "^8.2.1",
     "@semantic-release/git": "^10.0.1",
+    "@stryker-mutator/core": "^10.0.0",
+    "@stryker-mutator/jest-runner": "^10.0.0",
     "@testing-library/react": "^16.3.1",
     "@types/jest": "^29.5.0",
     "@types/ws": "^7.4.7",
