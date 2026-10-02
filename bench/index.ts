@@ -29,6 +29,7 @@ import {
   makeRandom,
   randomText,
 } from "./harness";
+import { runInboundChildKeyBench } from "./inbound-child-keys";
 import { runVersicleBench } from "./versicle";
 
 // Deterministic perf runs: disable the DEV-only sampled convergence check so
@@ -682,6 +683,13 @@ console.log(`
 
 console.error("  running versicle-shaped aging scenario...");
 runVersicleBench()
+  .then((report) => {
+    // eslint-disable-next-line no-console
+    console.log(`\n${report}`);
+    console.error("  running inbound child-key add / delete scenario...");
+
+    return runInboundChildKeyBench();
+  })
   .then((report) => {
     // eslint-disable-next-line no-console
     console.log(`\n${report}`);

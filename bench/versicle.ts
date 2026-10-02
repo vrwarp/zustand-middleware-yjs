@@ -25,7 +25,7 @@ import * as yjs from "yjs";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import yjsMiddleware, { getYjsStoreHandle } from "../src";
 
-interface ReadingSession {
+export interface ReadingSession {
   cfiRange: string;
   startTime: number;
   endTime: number;
@@ -33,7 +33,7 @@ interface ReadingSession {
   label: string;
 }
 
-interface DeviceProgress {
+export interface DeviceProgress {
   bookId: string;
   currentCfi: string;
   percentage: number;
@@ -42,7 +42,7 @@ interface DeviceProgress {
   readingSessions: ReadingSession[];
 }
 
-type ProgressTree = Record<string, Record<string, DeviceProgress>>;
+export type ProgressTree = Record<string, Record<string, DeviceProgress>>;
 
 interface ProgressState {
   progress: ProgressTree;
@@ -51,7 +51,7 @@ interface ProgressState {
 
 const deviceIds = ["device-0", "device-1"];
 
-const makeSession = (n: number): ReadingSession => {
+export const makeSession = (n: number): ReadingSession => {
   return {
     "cfiRange": `epubcfi(/6/${String(n % 40)}!/4/${String(n % 200)}:0),epubcfi(/6/${String(n % 40)}!/4/${String(n % 200)}:80)`,
     "startTime": 1_700_000_000_000 + (n * 60_000),
@@ -61,7 +61,7 @@ const makeSession = (n: number): ReadingSession => {
   };
 };
 
-const makeDeviceProgress = (bookId: string, sessions: number): DeviceProgress => {
+export const makeDeviceProgress = (bookId: string, sessions: number): DeviceProgress => {
   return {
     bookId,
     "currentCfi": `epubcfi(/6/4!/4/${String(sessions)}:0)`,
@@ -75,7 +75,7 @@ const makeDeviceProgress = (bookId: string, sessions: number): DeviceProgress =>
   };
 };
 
-const makeProgressTree = (books: number, sessionsPerDevice: number): ProgressTree => {
+export const makeProgressTree = (books: number, sessionsPerDevice: number): ProgressTree => {
   const tree: ProgressTree = {};
 
   for (let book = 0; book < books; book = book + 1) {

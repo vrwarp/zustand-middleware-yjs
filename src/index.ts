@@ -705,13 +705,17 @@ const yjsImpl: YjsImpl = <S>(
 
     /*
      * Full store-relative paths of the changed nodes in this batch, when
-     * every event in it named one at least two segments deep. Yjs already
-     * tells us exactly which branch changed; keeping the whole path lets the
-     * patch reconcile that branch instead of re-reading the entire
-     * top-level key. Cleared (and the batch falls back to the key-scoped
-     * path) as soon as any event names a top-level key directly.
+     * every event in it named one below a top-level key. Yjs already tells
+     * us exactly which branch changed; keeping the whole path lets the patch
+     * reconcile that branch instead of re-reading the entire top-level key.
+     * A Y.Map event also names the keys it added, replaced or removed, and
+     * each becomes a key path of its own, so adding a book or an annotation
+     * reads the added value rather than the map it went into. The batch
+     * falls back to the key-scoped path as soon as any event names a
+     * top-level key directly.
      */
     let pendingInboundPaths: InboundPath[] | undefined;
+    let pendingInboundKeyPaths: InboundPath[] | undefined;
     let hasShallowInboundEvent = false;
 
     const processBatch = () => {
@@ -734,9 +738,11 @@ const yjsImpl: YjsImpl = <S>(
        * slow route on later batches that do not need it.
        */
       const deepPaths = pendingInboundPaths;
+      const keyPaths = pendingInboundKeyPaths;
       const hasShallowEvent = hasShallowInboundEvent;
 
       pendingInboundPaths = undefined;
+      pendingInboundKeyPaths = undefined;
       hasShallowInboundEvent = false;
 
       // A later transaction in this batch may have fired the poison pill: the
@@ -776,14 +782,15 @@ const yjsImpl: YjsImpl = <S>(
         }
 
         /*
-         * Deep-path fast route: every event in this batch named a branch at
-         * least two segments below the store root, so only those branches
-         * need reconciling. Avoids serializing and diffing the whole
-         * top-level value, which is O(total state) per inbound batch.
+         * Deep-path fast route: every event in this batch named a branch or
+         * map keys below a top-level key, so only those need reconciling.
+         * Avoids serializing and diffing the whole top-level value, which is
+         * O(total state) per inbound batch.
          */
         if (!hasShallowEvent && deepPaths !== undefined && dataMap !== undefined) {
           const currentState = storeForPatch.getState() as Record<string, unknown>;
           const nextState = computeInboundStateForPaths(currentState, dataMap, deepPaths, {
+            keyPaths,
             syncedKeys: affectedKeys,
           });
 
@@ -967,31 +974,52 @@ const yjsImpl: YjsImpl = <S>(
         const keys = pendingInboundKeys;
 
         pendingInboundPaths = pendingInboundPaths ?? [];
+        pendingInboundKeyPaths = pendingInboundKeyPaths ?? [];
 
         const paths = pendingInboundPaths;
+        const keyPaths = pendingInboundKeyPaths;
+
+        /**
+         * Records what an event below the store root changed. A Y.Map
+         * event names the keys it added, replaced or removed
+         * (`keysChanged`), so when no array index sits above them each key
+         * is a stable key path and the patch reads only that key, not the
+         * whole map (for a map directly under a top-level key, the whole
+         * key). Any other event names the branch at its path, cut at the
+         * first array index, which may be miscounted or stale by the time
+         * the batch runs (see truncateAtArrayIndex); a branch under two
+         * segments still needs the key-scoped route.
+         */
+        const collectBranchEvent = (
+          event: yjs.YEvent<yjs.AbstractType<unknown>>,
+          storePath: InboundPath
+        ): void => {
+          keys.add(String(storePath[0]));
+
+          const path = truncateAtArrayIndex(storePath);
+
+          if (event.target instanceof yjs.Map && path.length === storePath.length) {
+            for (const key of (event as yjs.YMapEvent<unknown>).keysChanged as Set<string>) {
+              keyPaths.push([...path, key]);
+            }
+          } else if (path.length >= 2) {
+            paths.push([...path]);
+          } else {
+            hasShallowInboundEvent = true;
+          }
+        };
 
         /*
          * `event.path` is relative to the ROOT map, so under `scope` the
-         * store-relative path is the tail after the scope segment. A path of
-         * two or more store-relative segments identifies a branch the
-         * path-scoped patch can reconcile on its own; anything shallower
-         * (a top-level key added, replaced or deleted) still needs the
-         * key-scoped route, which reconciles that whole key. Paths are cut
-         * at their first array index, which may be miscounted or stale by
-         * the time the batch runs (see truncateAtArrayIndex).
+         * store-relative path is the tail after the scope segment. An event
+         * on the store root itself (a top-level key added, replaced or
+         * deleted) still needs the key-scoped route, which reconciles that
+         * whole key and applies the merge-defaults delete suppression.
          */
         for (const event of events) {
           if (scopeKey === undefined) {
             if (event.path.length > 0) {
-              keys.add(String(event.path[0]));
-
-              const path = truncateAtArrayIndex(event.path);
-
-              if (path.length >= 2) {
-                paths.push([...path]);
-              } else {
-                hasShallowInboundEvent = true;
-              }
+              collectBranchEvent(event, event.path);
             } else {
               for (const key of event.changes.keys.keys()) {
                 keys.add(key);
@@ -1011,15 +1039,7 @@ const yjsImpl: YjsImpl = <S>(
               }
               hasShallowInboundEvent = true;
             } else {
-              keys.add(String(event.path[1]));
-
-              const path = truncateAtArrayIndex(event.path.slice(1));
-
-              if (path.length >= 2) {
-                paths.push(path);
-              } else {
-                hasShallowInboundEvent = true;
-              }
+              collectBranchEvent(event, event.path.slice(1));
             }
           }
         }

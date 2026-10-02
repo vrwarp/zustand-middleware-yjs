@@ -286,7 +286,9 @@ Safety comes from being conservative about when the fast route applies:
 
 - **Any shallow event in the batch disables it.** A top-level key being
   added, replaced or deleted is only visible at that level, so such a batch
-  takes the original key-scoped route for all of its changes.
+  takes the original key-scoped route for all of its changes (which is also
+  where merge-defaults delete suppression applies). Keys added, replaced or
+  removed *below* a top-level key no longer count as shallow: see §12.
 - **A missing branch escalates rather than skipping.** If a named path is
   absent on either side, `computeInboundStateForPaths` returns `undefined`
   and the caller falls back to the key-scoped patch for the whole batch.
@@ -305,6 +307,106 @@ Safety comes from being conservative about when the fast route applies:
 
 Like the key-scoped path it replaces, this reconciles what the events named
 rather than the whole subtree — one level deeper, but the same assumption.
+
+### 12. Inbound child-key adds and deletes still re-read the whole key
+
+§11 left one very common case on the slow route. Yjs reports adding,
+replacing or removing a key of a Y.Map as ONE event on that map, with
+`event.keysChanged` naming the keys. For a map directly under a top-level
+key — a new book under `progress`, a highlight created or deleted under
+`annotations` — that event's store-relative path is just `[key]`, which the
+observer counted as shallow, so the whole batch took the key-scoped route:
+`toJSON()` of the entire top-level value, a deep diff, a rebuild. Deep edits
+riding in the same batch went with it, and the offline catch-up applied
+after a cold start nearly always contains an add, so it materialized the
+whole key a second time. One level further down, a map event was reconciled
+by reading its whole target map: a fields-only page turn re-serialized all
+of that device's reading sessions, and adding one annotation to
+`annotations[bookId]` re-serialized every annotation of the book.
+
+**Fix:** when an event's target is a Y.Map and no array index sits above it,
+the observer records one *key path* per key in `keysChanged` instead of the
+map's own path (or the shallow flag). `computeInboundStateForPaths` groups
+the key paths by parent and applies each group to one copy of the parent
+record: a key only the doc has is inserted (its sanitized doc JSON), a key
+only state has is removed (one filtering pass for all removals), a key on
+both sides gets the usual `patchState` reconcile, and a key on neither
+(changed and changed back within the batch) is a no-op. The parent must
+exist on both sides — a Y.Map in the doc, a record in state — or the batch
+escalates exactly as in §11; function-valued state keys are still never
+replaced. Events on the store root itself keep the key-scoped route. Of two
+equal paths the key path is kept, since it tolerates the key being absent.
+
+Applying key paths one at a time would trade one O(key) re-read for one
+O(parent) copy per changed key: in a prototype that did, a remote import of
+4,000 annotations into a 4,000-record key went from ~30 ms to ~11 s. Two
+supporting changes keep bulk batches linear: each container on a rebuilt
+spine is copied once per batch instead of once per path, and
+`minimizeInboundPaths` walks a trie instead of comparing every path with
+every kept path.
+
+Receiver-side store patch (`bench/inbound-child-keys.ts`, scopedDiff):
+median ms of 5 interleaved runs against the parent commit, with the Y.Map +
+Y.Array `toJSON()` calls in parentheses (identical in every run). Versicle
+`progress` tree, 2 devices × 300 sessions per book:
+
+| books | new book, before | after | drop book, before | after | fields-only turn, before | after |
+|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 14.8 (6,080) | 0.09 (5) | 9.2 (6,075) | 0.05 (0) | 0.56 (304) | 0.13 (0) |
+| 40 | 64.9 (24,290) | 0.12 (5) | 54.9 (24,285) | 0.09 (0) | 0.63 (304) | 0.12 (0) |
+| 120 | 178.9 (72,850) | 0.14 (5) | 146.0 (72,845) | 0.15 (0) | 0.65 (304) | 0.21 (0) |
+
+An ordinary page turn (fields plus one appended session) is unchanged at
+0.6–0.9 ms; its 304 `toJSON` calls become 302, the sessions array that is
+still reconciled whole because array indices are untrusted (§11). Cold
+start, stale local doc plus one catch-up transaction of 30 page turns:
+
+| books | turns only, before | after | turns + 1 new book, before | after |
+|---:|---:|---:|---:|---:|
+| 10 | 5.7 (3,060) | 4.8 (3,040) | 15.4 (6,106) | 5.2 (3,045) |
+| 40 | 23.2 (9,120) | 24.8 (9,060) | 60.0 (24,316) | 26.1 (9,065) |
+| 120 | 21.0 (9,120) | 19.5 (9,060) | 160.1 (72,876) | 22.7 (9,065) |
+
+Annotations, one remote add or delete:
+
+| annotations | flat add, before | after | flat delete, before | after | per-book add, in book | before | after |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1,000 | 5.7 (1,002) | 0.48 (1) | 6.0 (1,001) | 0.68 (0) | 100 | 0.31 (105) | 0.03 (1) |
+| 4,000 | 24.5 (4,002) | 1.7 (1) | 22.6 (4,001) | 1.6 (0) | 1,000 | 4.2 (1,005) | 0.50 (1) |
+| 16,000 | 119.6 (16,002) | 7.4 (1) | 113.5 (16,001) | 6.2 (0) | 5,000 | 21.8 (5,005) | 2.1 (1) |
+
+Bulk batches, one remote transaction into a flat `annotations` record
+(medians of 5 interleaved rounds of 3 samples):
+
+| batch | before | after |
+|---|---:|---:|
+| 100 adds into 1,000 records | 11.4 (1,101) | 0.88 (100) |
+| 1,000 adds into 4,000 records | 20.7 (5,001) | 6.8 (1,000) |
+| 4,000 adds into 4,000 records | 28.7 (8,001) | 32.6 (4,000) |
+| 100 adds into 16,000 records | 101.9 (16,101) | 7.8 (100) |
+| 100 deletes from 4,100 records | 328.9 (4,001) | 1.6 (0) |
+| 1,000 deletes from 5,000 records | 3,447.6 (4,001) | 4.9 (0) |
+
+The 4,000-into-4,000 row is on par (the samples overlap; a focused re-run
+with 9 samples per round measured 48 → 32 ms, and 2,000 into 2,000
+25 → 11 ms). The delete rows also stop paying the key-scoped route's
+per-key record rebuild in the inbound state applier, which a deep diff of
+a record with many deletions still pays elsewhere.
+
+What remains on a flat record is the immutable copy of the record itself
+(O(keys), ~7 ms at 16,000 annotations), which every structurally shared
+update pays; splitting a huge record by book bounds it by the book.
+
+Like §11, this reconciles what the events named: a child-key event no longer
+re-reads the whole key, so it no longer incidentally heals drift elsewhere
+in that key. It relies on the invariant §11 already relies on — once
+`processBatch` has flushed pending local writes, store and doc agree for
+synced keys except where the batch's events point. One observable detail
+differs from the key-scoped route: keys inserted by the same batch are
+appended in event order (the order the sender wrote them) rather than in
+the doc's internal key order, which can differ when a deleted key is
+re-added. Values are identical; key order of a record was never replicated
+between devices.
 
 ## Downstream-shaped aging scenario (one hot top-level key)
 
@@ -434,7 +536,7 @@ run-to-run.)
 
 ## Regression coverage
 
-Four structural test suites lock the fixes in without flaky wall-clock
+Five structural test suites lock the fixes in without flaky wall-clock
 assertions:
 
 - `src/text-performance.spec.ts` — Y.Text run coalescing (item counts per
@@ -461,4 +563,23 @@ assertions:
   first segment), `minimizeInboundPaths` segment-wise coverage, and a
   fast-check property running arbitrary remote write sequences through both a
   path-scoped and a key-scoped receiver and asserting they end up identical
-  to each other and to the sender.
+  to each other and to the sender. For §12 it adds the key-path contract
+  (insert, remove, replace, no-op, parent missing on either side escalates,
+  functions kept, a key path wins a tie with an equal node path, the input
+  state is never mutated) and a second property, with and without `scope`:
+  several remote transactions per tick, receiver-local writes pending in the
+  same tick, and branches dropped or replaced by primitives, arrays or null
+  at every level; every store must equal its own doc, the docs must
+  converge, and the path-scoped receiver must equal a legacy full-tree
+  receiver.
+- `src/inbound-child-key.spec.ts` — the §12 fix: `toJSON` spies proving
+  neither the top-level map nor a sibling is serialized for a remote child
+  key add or delete, and exact receiver `toJSON` counts that do not grow with
+  4× the siblings (new or dropped book, annotation add or delete, a deep edit
+  riding with an add, a fields-only page turn, a per-book annotation add).
+  Bulk guards keep a batch of K adds or deletes linear: `toJSON` calls and
+  enumerated record entries exactly 4× at 4K/4N and below the key-scoped
+  route, key-path reads per path flat as the batch grows (the trie
+  minimizer), and — the one ratio of CPU times, because a parent copy leaves
+  no trace outside the patch — 64 changed keys under a 5,000-key parent
+  costing about what one does.

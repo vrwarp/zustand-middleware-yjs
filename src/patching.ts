@@ -1238,6 +1238,10 @@ export type InboundPath = readonly (string | number)[];
  */
 const absent = Symbol("absent");
 
+/** Store-safe JSON of a doc value: a shared type is serialized, anything else is already JSON. */
+const readDocJson = (value: unknown): unknown =>
+  { return sanitizeDocJson(value instanceof yjs.AbstractType ? value.toJSON() : value) };
+
 const readDocJsonAtPath = (dataMap: yjs.Map<unknown>, path: InboundPath): unknown => {
   let node: unknown = dataMap;
 
@@ -1261,7 +1265,21 @@ const readDocJsonAtPath = (dataMap: yjs.Map<unknown>, path: InboundPath): unknow
     }
   }
 
-  return sanitizeDocJson(node instanceof yjs.AbstractType ? node.toJSON() : node);
+  return readDocJson(node);
+};
+
+/** The Y.Map at `path` (map keys only), or undefined when a step is missing or not a Y.Map. */
+const readDocMapAtPath = (dataMap: yjs.Map<unknown>, path: InboundPath): yjs.Map<unknown> | undefined => {
+  let node: unknown = dataMap;
+
+  for (const step of path) {
+    if (!(node instanceof yjs.Map)) {
+      return undefined;
+    }
+    node = node.get(String(step));
+  }
+
+  return node instanceof yjs.Map ? node : undefined;
 };
 
 /** Reads the value at `path` in plain state, or `absent`. */
@@ -1292,11 +1310,18 @@ const readStateAtPath = (state: unknown, path: InboundPath): unknown => {
 };
 
 /**
- * Returns a copy of `state` with `value` at `path`, sharing every object
- * that is not on the path. Containers along the spine are copied in kind
- * (array vs record) so array-typed levels stay arrays.
+ * Returns `state` with `value` at `path`, sharing every object that is not
+ * on the path. Containers along the spine are copied in kind (array vs
+ * record) so array-typed levels stay arrays. A container in `owned` is a
+ * copy this patch already made and is updated in place, so a parent that
+ * many paths of one batch cross is copied once, not once per path.
  */
-const setStateAtPath = (state: unknown, path: InboundPath, value: unknown): unknown => {
+const setStateAtPath = (
+  state: unknown,
+  path: InboundPath,
+  value: unknown,
+  owned: WeakSet<object>
+): unknown => {
   if (path.length === 0) {
     return value;
   }
@@ -1305,41 +1330,74 @@ const setStateAtPath = (state: unknown, path: InboundPath, value: unknown): unkn
 
   if (Array.isArray(state)) {
     const index = Number(step);
-    const copy = [...state];
+    const copy = owned.has(state) ? state : [...state];
 
-    copy[index] = setStateAtPath(state[index], rest, value);
+    owned.add(copy);
+    copy[index] = setStateAtPath(state[index], rest, value, owned);
 
     return copy;
   }
 
-  const record = isPlainRecord(state) ? state : {};
   const key = String(step);
 
   if (isDangerousKey(key)) {
     return state;
   }
 
-  return { ...record, [key]: setStateAtPath(record[key], rest, value) };
+  const source = isPlainRecord(state) ? state : {};
+  const record = owned.has(source) ? source : { ...source };
+
+  owned.add(record);
+  record[key] = setStateAtPath(source[key], rest, value, owned);
+
+  return record;
 };
+
+/** A node of the trie of kept paths that minimizeInboundPaths walks. */
+interface PathTrieNode {
+  children: Map<string, PathTrieNode>;
+  isKept: boolean;
+}
 
 /**
  * Drops any path that a shallower collected path already covers, so a branch
  * is reconciled once. `['a','b']` covers `['a','b','c']`; `['a','bb']` does
- * not cover `['a','b']` (segment-wise comparison, not string prefix).
+ * not cover `['a','b']` (segment-wise comparison, not string prefix). Of two
+ * equal paths, the one listed first is kept.
+ *
+ * Walks a trie of the kept paths, so the cost is linear in the number of
+ * segments rather than paths × kept paths: one bulk remote batch (an
+ * offline catch-up, an import) can name thousands of keys.
  */
 export const minimizeInboundPaths = (paths: readonly InboundPath[]): InboundPath[] => {
   const sorted = [...paths];
 
   sorted.sort((left, right) => left.length - right.length);
 
+  const root: PathTrieNode = { "children": new Map(), "isKept": false };
   const kept: InboundPath[] = [];
 
   for (const path of sorted) {
-    const isCovered = kept.some((candidate) =>
-      { return candidate.length <= path.length &&
-      candidate.every((step, index) => String(step) === String(path[index])) });
+    let node = root;
 
-    if (!isCovered) {
+    for (const step of path) {
+      if (node.isKept) {
+        break;
+      }
+
+      const segment = String(step);
+      let child = node.children.get(segment);
+
+      if (child === undefined) {
+        child = { "children": new Map(), "isKept": false };
+        node.children.set(segment, child);
+      }
+      node = child;
+    }
+
+    // Still on a kept node: a shallower (or equal) kept path covers this one.
+    if (!node.isKept) {
+      node.isKept = true;
       kept.push(path);
     }
   }
@@ -1368,9 +1426,112 @@ export const truncateAtArrayIndex = (path: InboundPath): InboundPath => {
 };
 
 /**
+ * Options for computeInboundStateForPaths.
+ */
+export interface InboundPathOptions extends InboundStateOptions {
+  /**
+   * Store-relative paths that each name ONE key of a Y.Map that a Yjs event
+   * reported as changed (`keysChanged`: added, replaced or removed). The
+   * parent must exist on both sides, as a Y.Map in the doc and a record in
+   * state; the key itself may be missing from either.
+   */
+  keyPaths?: readonly InboundPath[];
+}
+
+/**
+ * The state value patched toward the doc value: the same `patchState` diff
+ * as the key-scoped route when both have the same shape, else the doc value.
+ */
+const reconcileStateValue = (stateValue: unknown, docValue: unknown): unknown =>
+  { return isDiffableState(stateValue) && isDiffableState(docValue) &&
+    isSameShape(stateValue, docValue)
+    ? patchState(stateValue, docValue)
+    : docValue };
+
+/**
+ * Applies the changed `keys` of a doc Y.Map to the state record that mirrors
+ * it: a key only the doc has is inserted, a key only state has is removed,
+ * a key on both sides is reconciled, and a key on neither (changed and then
+ * removed again within the batch) is left alone.
+ *
+ * The record is copied at most once, however many keys changed, and filtered
+ * once for all removals; a copy this patch already owns is updated in place.
+ * One bulk batch can name thousands of keys under the same parent, so a copy
+ * or a filter per key would be quadratic.
+ *
+ * @param record - The state record at the event's path.
+ * @param docMap - The Y.Map at the same path.
+ * @param keys - The changed keys (no duplicates).
+ * @param owned - Containers this patch already copied.
+ * @returns The updated record, or `record` when it is unchanged or was
+ * updated in place.
+ */
+const applyChangedKeys = (
+  record: Record<string, unknown>,
+  docMap: yjs.Map<unknown>,
+  keys: readonly string[],
+  owned: WeakSet<object>
+): Record<string, unknown> => {
+  let next = record;
+  let removedKeys: Set<string> | undefined;
+
+  for (const key of keys) {
+    // sanitizeDocJson would drop the key, so it never reaches state.
+    if (isDangerousKey(key)) {
+      continue;
+    }
+
+    const stateValue = getOwnValue(record, key);
+
+    if (stateValue instanceof Function) {
+      // A function (store action) is never replicated, so never replaced.
+      continue;
+    }
+
+    const isInState = Object.hasOwn(record, key);
+
+    if (!docMap.has(key)) {
+      if (isInState) {
+        removedKeys = removedKeys ?? new Set<string>();
+        removedKeys.add(key);
+      }
+      continue;
+    }
+
+    const docValue = readDocJson(docMap.get(key));
+    const patched = isInState ? reconcileStateValue(stateValue, docValue) : docValue;
+
+    if (!isInState || !Object.is(patched, stateValue)) {
+      if (!owned.has(next)) {
+        next = { ...record };
+        owned.add(next);
+      }
+      next[key] = patched;
+    }
+  }
+
+  if (removedKeys === undefined) {
+    return next;
+  }
+
+  // Built by filtering rather than the delete operator.
+  const filtered: Record<string, unknown> = {};
+
+  for (const key of Object.keys(next)) {
+    if (!removedKeys.has(key)) {
+      filtered[key] = next[key];
+    }
+  }
+  owned.add(filtered);
+
+  return filtered;
+};
+
+/**
  * Path-scoped inbound patch: reconciles ONLY the branches named by `paths`
- * (each at least two segments deep) instead of re-reading and re-diffing a
- * whole top-level key.
+ * (each at least two segments deep) and the map keys named by
+ * `options.keyPaths` instead of re-reading and re-diffing a whole top-level
+ * key.
  *
  * Why: `observeDeep` already hands us the exact path of every remote change,
  * but the scoped inbound patch threw all but the first segment away and
@@ -1378,31 +1539,38 @@ export const truncateAtArrayIndex = (path: InboundPath): InboundPath => {
  * large tree, that is O(total state) per inbound batch — the receiving
  * device pays for its whole library on every remote page turn, and the cost
  * grows forever. Patching at the event's own path makes it O(changed
- * branch).
+ * branch). Key paths do the same for a change to a map's own keys: a new
+ * book or annotation from another device costs the added value, not the
+ * map it was added to (for a map directly under a top-level key, the whole
+ * key).
  *
  * Semantics match the top-level patch for the branches it touches: the value
  * at each path is reconciled with the same `patchState` diff, and the spine
  * above it is rebuilt with structural sharing, so untouched siblings keep
  * their object identity (better referential stability than rebuilding the
- * whole top-level value, which is what the caller did before).
+ * whole top-level value, which is what the caller did before). Each
+ * container on a spine is copied once per call, however many paths cross
+ * it.
  *
  * The caller must only pass paths that Yjs events named, cut at their first
- * array index (`truncateAtArrayIndex`). Like the key-scoped path it
- * replaces, this reconciles what changed rather than the whole subtree — one
- * level deeper, but the same assumption.
+ * array index (`truncateAtArrayIndex`), and key paths only for map keys
+ * with no array index above them. Like the key-scoped path it replaces,
+ * this reconciles what changed rather than the whole subtree — one level
+ * deeper, but the same assumption.
  *
  * Returns `undefined` when a path cannot be reconciled in isolation — the
- * branch is missing on one side, so the change is only visible at a level
- * this call was not given. Reconciling the rest and dropping that path would
- * silently lose the change, so the caller must fall back to the key-scoped
- * patch for the whole batch instead. (Adding or removing a branch normally
- * also raises a shallower event, which makes the caller take that route
- * before ever reaching this function.).
+ * branch (for a key path: the parent map) is missing on one side, so the
+ * change is only visible at a level this call was not given. Reconciling
+ * the rest and dropping that path would silently lose the change, so the
+ * caller must fall back to the key-scoped patch for the whole batch
+ * instead. (Adding or removing a branch normally also raises an event on
+ * its parent, whose key path covers it.).
  *
  * @param currentState - The current store state.
  * @param dataMap - The Y.Map the store is bound to.
  * @param paths - Store-relative paths of the changed nodes, each at least two segments long.
- * @param options - Inbound options; `syncedKeys` gates the first segment.
+ * @param options - Inbound options; `syncedKeys` gates the first segment,
+ * `keyPaths` names changed map keys.
  * @returns The next state, `currentState` when nothing changed, or
  * `undefined` when the caller must fall back.
  */
@@ -1410,11 +1578,15 @@ export const computeInboundStateForPaths = <T>(
   currentState: T,
   dataMap: yjs.Map<unknown>,
   paths: readonly InboundPath[],
-  { syncedKeys }: InboundStateOptions = {}
+  { syncedKeys, keyPaths = [] }: InboundPathOptions = {}
 ): T | undefined => {
-  let next: unknown = currentState;
+  const keyPathSet = new Set(keyPaths);
+  const changedKeysByParent = new Map<string, { parentPath: InboundPath; keys: string[] }>();
+  const nodePaths: InboundPath[] = [];
 
-  for (const path of minimizeInboundPaths(paths)) {
+  // Key paths first: of two equal paths the key path is kept, because it
+  // tolerates the key being absent on either side.
+  for (const path of minimizeInboundPaths([...keyPaths, ...paths])) {
     if (path.length < 2 || isDangerousKey(String(path[0]))) {
       return undefined;
     }
@@ -1422,7 +1594,38 @@ export const computeInboundStateForPaths = <T>(
       // Not replicated into this store: correctly ignored, not an escalation.
       continue;
     }
+    if (keyPathSet.has(path)) {
+      const parentPath = path.slice(0, -1);
+      const parentId = JSON.stringify(parentPath);
+      const group = changedKeysByParent.get(parentId) ?? { parentPath, "keys": [] };
 
+      group.keys.push(String(path.at(-1)));
+      changedKeysByParent.set(parentId, group);
+    } else {
+      nodePaths.push(path);
+    }
+  }
+
+  // Containers copied by this call: updated in place from then on.
+  const owned = new WeakSet();
+  let next: unknown = currentState;
+
+  for (const { parentPath, keys } of changedKeysByParent.values()) {
+    const docMap = readDocMapAtPath(dataMap, parentPath);
+    const record = readStateAtPath(next, parentPath);
+
+    if (docMap === undefined || !isPlainRecord(record)) {
+      return undefined;
+    }
+
+    const updated = applyChangedKeys(record, docMap, keys, owned);
+
+    if (updated !== record) {
+      next = setStateAtPath(next, parentPath, updated, owned);
+    }
+  }
+
+  for (const path of nodePaths) {
     const docValue = readDocJsonAtPath(dataMap, path);
     const stateValue = readStateAtPath(next, path);
 
@@ -1434,13 +1637,10 @@ export const computeInboundStateForPaths = <T>(
       continue;
     }
 
-    const patched = isDiffableState(stateValue) && isDiffableState(docValue) &&
-      isSameShape(stateValue, docValue)
-      ? patchState(stateValue, docValue)
-      : docValue;
+    const patched = reconcileStateValue(stateValue, docValue);
 
     if (!Object.is(patched, stateValue)) {
-      next = setStateAtPath(next, path, patched);
+      next = setStateAtPath(next, path, patched, owned);
     }
   }
 
