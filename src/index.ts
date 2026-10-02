@@ -1009,9 +1009,11 @@ const yjsImpl: YjsImpl = <S>(
         if (scopeKey !== undefined && path.length === 0) {
           // The scoped child itself was placed in this transaction. Yjs raises
           // no events inside a type created in the same transaction, so every
-          // key it holds is a candidate.
+          // key it has held is a candidate: `_map` also keeps a key set and
+          // deleted again (say, the flush created it and the caller deleted
+          // it), which keys() leaves out.
           if (event.changes.keys.has(scopeKey)) {
-            for (const key of dataMap.keys()) {
+            for (const key of dataMap._map.keys()) {
               changedKeys.add(key);
             }
           }
@@ -1021,7 +1023,10 @@ const yjsImpl: YjsImpl = <S>(
           if (storePath.length > 0) {
             changedKeys.add(String(storePath[0]));
           } else {
-            for (const key of event.changes.keys.keys()) {
+            // keysChanged, not changes.keys: the latter leaves out a key that
+            // did not exist before the transaction and was set and deleted
+            // inside it, such as one the flush created and the caller deleted.
+            for (const key of (event as yjs.YMapEvent<unknown>).keysChanged as Set<string>) {
               changedKeys.add(key);
             }
           }

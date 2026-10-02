@@ -198,24 +198,19 @@ const localWrite = fc.record({
 type LocalWrite = typeof localWrite extends fc.Arbitrary<infer T> ? T : never;
 
 /*
- * A receiver-local store write, as an immutable update. It only updates a
- * top-level key the store already holds: Yjs leaves a top-level key that
- * is created and deleted in one transaction out of `event.changes.keys`, so
- * the own-flush narrowing misses a key the flush creates and the caller
- * deletes, whatever the inbound route (a gap of its own, not under test).
+ * A receiver-local store write, as an immutable update. It recreates a
+ * top-level key the store no longer holds, so the caller's write that
+ * follows the flush may delete a key the flush has just created.
  */
 const applyLocalWrite = (state: State, write: LocalWrite): State => {
   if (write.kind === "current") {
-    return Object.hasOwn(state, "currentBookId") ? { "currentBookId": `own${String(write.value)}` } : state;
+    return { "currentBookId": `own${String(write.value)}` };
   }
   if (write.kind === "meta") {
-    return Object.hasOwn(state, "meta") ? { "meta": { ...(state.meta as State), "a": write.value } } : state;
-  }
-  if (!Object.hasOwn(state, "progress")) {
-    return state;
+    return { "meta": { ...(state.meta as State | undefined), "a": write.value } };
   }
 
-  const progress = state.progress as Record<string, State>;
+  const progress = (state.progress ?? {}) as Record<string, State | undefined>;
   const bookId = `book-${String(write.book)}`;
 
   return {
