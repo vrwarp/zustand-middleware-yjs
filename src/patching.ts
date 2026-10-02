@@ -969,6 +969,11 @@ const applyChangesToObject = (initialObject: Record<string, unknown>, objectChan
     if (prop === "__proto__" || prop === "constructor" || prop === "prototype") {
       continue;
     }
+    // Functions (store actions) are never replicated, so replicated data
+    // under the same key (schema drift, a foreign writer) must not replace one.
+    if (getOwnValue(revisedObject, prop) instanceof Function) {
+      continue;
+    }
 
     switch (type) {
       case changeType.insert:
@@ -1102,20 +1107,24 @@ export const computeInboundState = <T>(
 
   // pickKeys is presence-preserving, but function-valued state keys are
   // excluded from the replication universe entirely (functions are never
-  // synced; a function entry in syncedKeys is a dev-mode error upstream).
+  // synced; a function entry in syncedKeys is a dev-mode error upstream) —
+  // on BOTH sides of the diff, or a map value under that key would be
+  // merged over the action below.
   const current = currentState as Record<string, unknown>;
   const oldSubset: Record<string, unknown> = {};
+  const replicatedKeys = new Set<string>();
 
   for (const key of syncedKeys) {
-    if (isDangerousKey(key)) {
+    if (isDangerousKey(key) || getOwnValue(current, key) instanceof Function) {
       continue;
     }
-    if (Object.hasOwn(current, key) && !(current[key] instanceof Function)) {
+    replicatedKeys.add(key);
+    if (Object.hasOwn(current, key)) {
       oldSubset[key] = current[key];
     }
   }
 
-  const newSubset = isPlainRecord(docJson) ? pickKeys(docJson, syncedKeys) : {};
+  const newSubset = isPlainRecord(docJson) ? pickKeys(docJson, replicatedKeys) : {};
   const patchedSubset = patchState(oldSubset, newSubset, patchOptions);
 
   /*
@@ -1363,6 +1372,10 @@ export const computeInboundStateForPaths = <T>(
 
     if (docValue === absent || stateValue === absent) {
       return undefined;
+    }
+    if (stateValue instanceof Function) {
+      // A function (store action) is never replicated, so never replaced.
+      continue;
     }
 
     const patched = isDiffableState(stateValue) && isDiffableState(docValue) &&

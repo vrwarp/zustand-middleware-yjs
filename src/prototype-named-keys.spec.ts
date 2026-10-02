@@ -222,5 +222,30 @@ describe.each([
       expect(docB.getMap("s").toJSON().dict).toEqual({ hello: 1, world: 3 });
       expect(storeB.getState().dict).toEqual({ hello: 1, world: 3 });
     });
+
+    it("picks up prototype-named keys a remote peer adds", async () => {
+      const docA = new Y.Doc();
+      const docB = new Y.Doc();
+      const storeA = makeStore(docA, scopedDiff);
+      const storeB = makeStore(docB, scopedDiff);
+
+      storeA.setState({ dict: { hello: 1 } });
+      getYjsStoreHandle(storeA).flush();
+      replicate(docA, docB);
+      await drain();
+
+      // The store-action guard must not mistake an inherited
+      // Object.prototype member for an action and drop the insert.
+      const wordsA = docA.getMap("s").get("dict") as Y.Map<unknown>;
+
+      docA.transact(() => {
+        wordsA.set("valueOf", 2);
+        wordsA.set("toString", 3);
+      });
+      replicate(docA, docB);
+      await drain();
+
+      expect(storeB.getState().dict).toEqual({ hello: 1, valueOf: 2, toString: 3 });
+    });
   });
 });
