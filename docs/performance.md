@@ -46,9 +46,10 @@ bulk delete is quadratic in the edit size — and it starts further behind in an
 aged document.
 
 **Fix:** `coalesceTextChanges` in `src/patching.ts`. Adjacent per-character
-changes are merged into run operations before application (both into `Y.Text`
-and into plain state strings on the inbound path). The sequential-application
-semantics are preserved exactly; the diff contract is unchanged.
+changes are merged into run operations before application (into `Y.Text`,
+and at the time also into plain state strings on the inbound path, where §15
+later removed the text diff altogether). The sequential-application semantics
+are preserved exactly; the diff contract is unchanged.
 
 Measured (Node 22, median):
 
@@ -511,6 +512,82 @@ more than 4× the time once GC joins in); the after column grows with n.
 At today's library sizes (tens to hundreds of books) the old cost was at
 most ~15 ms; the win is for id-keyed maps with thousands of entries.
 
+### 15. Text diffs computed and thrown away (string writes)
+
+The record and array differs built a nested change list for every unequal
+string pair, which runs the O(NP) text diff of §2: quadratic in the edit
+distance, in time and in memory. Nothing used that list:
+
+- **Outbound, primitive strings** (`atomicKeys`, `disableYText`) are written
+  with one `map.set` (a delete+insert in a `Y.Array`); the list was
+  discarded.
+- **Outbound, `Y.Text` children** are patched by their own `patchSharedType`
+  call, which diffed the same pair again. In full-tree mode every `Y.Map` or
+  `Y.Array` level re-diffs its subtree, so a string three records deep paid
+  four text diffs per flush.
+- **Inbound,** `patchState` diffed the state string against the doc string
+  and applied the result, rebuilding a string that is by construction the
+  doc string. Strings are primitives, so there is no identity to preserve.
+
+§2's prefix/suffix trimming keeps this to microseconds for small edits (a
+title, a CFI), but replacing a long string, which is exactly what
+`atomicKeys` and `disableYText` are recommended for, ran a full-window diff
+on the sender **and on every receiver**. A 4k-char replacement grew the heap
+by ~600 MB, and a 6k-char base64 replacement (a ~4.5 KB thumbnail) ran out
+of memory under a 1 GB heap (`--max-old-space-size=1024`).
+
+**Fix:** an internal `nestedStrings` option on `getChanges`; its default
+output is unchanged.
+
+- `"defer"` (`patchSharedType` and both scoped paths): an unequal nested
+  string pair emits a `pending` change carrying a sentinel instead of a
+  diff. The applier never reads a pending payload: it writes a primitive
+  whole, repairs a `Y.Text` ↔ string mapping change, or recurses into the
+  `Y.Text`, whose own call runs the one diff that is applied. A top-level
+  string pair is never deferred.
+- `"update"` (`patchState`): the pair emits an `update` carrying the doc
+  string, and a top-level string pair returns the doc string directly.
+
+Only the final element-wise emit changes, so array alignment and every other
+change are identical to the default output (a fast-check property pins this).
+The sentinel is a symbol, not an empty list: applying it by mistake throws
+instead of silently dropping the edit.
+
+`bench/string-diffs.ts`, interleaved A/B, median of five process runs (each a
+median of 5-31 runs) on a heavily loaded 4-CPU box; `textDiffs` is the exact
+number of text diffs one operation runs:
+
+| scenario | before | after | textDiffs |
+|---|---:|---:|---:|
+| replace a 1k-char `disableYText` string (scoped) | 56.9 ms | 0.20 ms | 1 → 0 |
+| replace a 2k-char `disableYText` string (scoped) | 229 ms | 0.05 ms | 1 → 0 |
+| replace a 4k-char `disableYText` string (scoped) | 912 ms | 0.09 ms | 1 → 0 |
+| replace a 4k-char `disableYText` string (full-tree) | 1,048 ms | 0.07 ms | 1 → 0 |
+| replace a 4k-char `atomicKeys` string (full-tree) | 926 ms | 0.07 ms | 1 → 0 |
+| replace one of fifty 1k-char array strings (full-tree) | 86.8 ms | 1.04 ms | 2 → 0 |
+| replace one of fifty 1k-char array strings (scoped) | 34.4 ms | 0.71 ms | 1 → 0 |
+| 1-char insert into a 50k-char `Y.Text` (full-tree) | 1.03 ms | 0.53 ms | 2 → 1 |
+| 1-char insert into a 50k-char `Y.Text` (scoped) | 0.96 ms | 0.52 ms | 2 → 1 |
+| inbound patch, replaced 1k / 2k / 4k-char string | 38 / 135 / 757 ms | 0.02 ms | 1 → 0 |
+| inbound patch, 1-char insert into a 50k-char string | 0.36 ms | 0.003 ms | 1 → 0 |
+
+The bench's random strings are not a contrived worst case. Replacing one
+`disableYText` string of a realistic shape (scoped flush on the sender,
+inbound patch on a receiver; interleaved, median of five):
+
+| shape | 1k chars | 2k chars | 4k chars |
+|---|---:|---:|---:|
+| English prose, sender | 40 ms | 107 ms | 529 ms |
+| English prose, receiver | 33 ms | 116 ms | 570 ms |
+| base64, sender | 42 ms | 185 ms | 897 ms |
+| base64, receiver | 38 ms | 213 ms | 838 ms |
+
+After the fix every cell is under 0.3 ms and flat in length, and the 6k
+base64 replacement completes with ~43 MB of heap in use. For stores of short
+strings with small edits (versicle's CFIs and titles) the per-flush saving is
+microseconds; the value is removing the out-of-memory tail when a long string
+is replaced, plus ~1.9× on keystrokes in very large `Y.Text` notes.
+
 ## Downstream-shaped aging scenario (one hot top-level key)
 
 `bench/versicle.ts` models the shape §9 and §10 were found in: a single
@@ -619,8 +696,9 @@ run-to-run.)
   identity the fast path relies on and silently restores full-tree cost.
 - **Use `atomicKeys` (or `disableYText`)** for strings that are not
   collaboratively edited text — UUIDs, enums, base64 blobs. Replacing a
-  primitive string is one map operation; replacing a `Y.Text` is a diff plus
-  item churn that permanently grows the document.
+  primitive string is one map operation, with no text diff on the sender or
+  on any receiver whatever its length (§15); replacing a `Y.Text` is a diff
+  plus item churn that permanently grows the document.
 - **Batching is already automatic.** Multiple `set()` calls in one tick
   coalesce into one Yjs transaction; multiple inbound transactions in one
   tick coalesce into one store patch.
@@ -639,7 +717,7 @@ run-to-run.)
 
 ## Regression coverage
 
-Seven structural test suites lock the fixes in without flaky wall-clock
+Eight structural test suites lock the fixes in without flaky wall-clock
 assertions:
 
 - `src/text-performance.spec.ts` — Y.Text run coalescing (item counts per
@@ -700,3 +778,12 @@ assertions:
   deleting one key — on `patchState`, all three inbound routes and creation
   hydration. Guards for survivor key order and for an own `"__proto__"` key
   staying data rather than becoming the prototype.
+- `src/discarded-string-diff.spec.ts` — the §15 fix: a `getChanges` spy
+  counting text diffs per flush and per inbound batch in both modes: zero
+  for primitive strings (top level, three records deep, array elements) and
+  for receivers, exactly one for a `Y.Text` keystroke (the applied diff,
+  which doubles as a liveness check on the spy). Plus a fast-check property
+  that the internal `nestedStrings` modes change only how nested string
+  pairs are described (array alignment and every other change identical to
+  the default output), and that the deferral sentinel cannot be applied as
+  an empty change list.

@@ -418,14 +418,60 @@ const isShiftPreferredOverReplace = (
 };
 
 /**
+ * How record and array diffs describe an unequal pair of NESTED strings (a
+ * top-level string pair is always diffed: that is the Y.Text diff
+ * patchSharedType applies).
+ *
+ * - `"diff"` (default): a pending change carrying the character-level diff.
+ * - `"defer"`: a pending change carrying deferredTextDiff, for the
+ * outbound applier, which never reads a nested string's list: a primitive
+ * string is written whole, and a Y.Text child is diffed by its own
+ * patchSharedType call.
+ * - `"update"`: an update change carrying the new string, for the inbound
+ * state applier, where applying the diff only rebuilds that same string.
+ *
+ * Both skip the O(NP) text diff, which is quadratic in the edit distance:
+ * replacing a 4k-char string cost ~0.5 s and ~600 MB of heap per diff.
+ */
+export type NestedStringMode = "diff" | "defer" | "update";
+
+/**
+ * Stands in for the text diff of a nested string pair under
+ * `nestedStrings: "defer"`. A unique symbol rather than an empty list: it
+ * must never be applied as changes, and iterating it throws instead of
+ * silently applying nothing.
+ */
+export const deferredTextDiff = Symbol("deferredTextDiff");
+
+/**
+ * The change for an unequal pair of nested strings under a mode that does
+ * not diff them (see NestedStringMode).
+ */
+const getNestedStringChange = (
+  key: string | number,
+  value: string,
+  nestedStrings: Exclude<NestedStringMode, "diff">
+): Change => {
+  return nestedStrings === "defer"
+    ? [changeType.pending, key, deferredTextDiff]
+    : [changeType.update, key, value];
+};
+
+/**
  * Options for array diffing.
  */
 interface ArrayDiffOptions {
   /** The caller's previous state for the same array (alignment hint). */
   previousA?: unknown[];
+  /** How unequal string elements are described (see NestedStringMode). */
+  nestedStrings?: NestedStringMode;
 }
 
-const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOptions = {}): Change[] => {
+const getArrayChanges = (
+  a: unknown[],
+  b: unknown[],
+  { previousA, nestedStrings = "diff" }: ArrayDiffOptions = {}
+): Change[] => {
   const changeList: Change[] = [];
   let finalIndices = 0;
   let bOffset = 0;
@@ -659,10 +705,15 @@ const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOpt
     }
 
     if (isDiffable(value) && isDiffable(b[bIndex]) && isSameType(value, b[bIndex])) {
-      const currentDiff = getChanges(value, b[bIndex]);
+      if (typeof value === "string" && nestedStrings !== "diff") {
+        // Unequal: the lookahead's k = 0 step already matched equal strings.
+        changeList.push(getNestedStringChange(bIndex, b[bIndex] as string, nestedStrings));
+      } else {
+        const currentDiff = getChanges(value, b[bIndex], { nestedStrings });
 
-      if (currentDiff.length > 0) {
-        changeList.push([changeType.pending, bIndex, currentDiff]);
+        if (currentDiff.length > 0) {
+          changeList.push([changeType.pending, bIndex, currentDiff]);
+        }
       }
       finalIndices = finalIndices + 1;
     } else {
@@ -682,7 +733,11 @@ const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOpt
   return changeList;
 };
 
-const getRecordChanges = (a: Record<string, unknown>, b: Record<string, unknown>): Change[] => {
+const getRecordChanges = (
+  a: Record<string, unknown>,
+  b: Record<string, unknown>,
+  nestedStrings: NestedStringMode
+): Change[] => {
   const changeList: Change[] = [];
 
   /*
@@ -708,7 +763,9 @@ const getRecordChanges = (a: Record<string, unknown>, b: Record<string, unknown>
        * guarantees a non-empty change list.
        */
       if (!isDeepEqualForDiff(a[property], value)) {
-        changeList.push([changeType.pending, property, getChanges(a[property], value)]);
+        changeList.push(typeof value === "string" && nestedStrings !== "diff"
+          ? getNestedStringChange(property, value, nestedStrings)
+          : [changeType.pending, property, getChanges(a[property], value, { nestedStrings })]);
       }
     } else if (!isSameValueZero(a[property], value)) {
       changeList.push([changeType.update, property, value]);
@@ -731,6 +788,12 @@ export interface GetChangesOptions {
    * getArrayChanges). Ignored for strings and records.
    */
   previousA?: unknown;
+
+  /**
+   * Internal: how unequal NESTED string pairs are described, at every depth
+   * (see NestedStringMode). Defaults to `"diff"`.
+   */
+  nestedStrings?: NestedStringMode;
 }
 
 /**
@@ -739,9 +802,13 @@ export interface GetChangesOptions {
  * @param a - The value to change from (for shared types: their JSON).
  * @param b - The value to change to (the new state).
  * @param options - Diff options; see {@link GetChangesOptions} for the
- * array alignment hint.
+ * array alignment hint and the nested string mode.
  */
-export const getChanges = (a: Diffable, b: Diffable, { previousA }: GetChangesOptions = {}): Change[] => {
+export const getChanges = (
+  a: Diffable,
+  b: Diffable,
+  { previousA, nestedStrings = "diff" }: GetChangesOptions = {}
+): Change[] => {
   if (typeof a === "string" && typeof b === "string") {
     return getChangesText(a, b);
   }
@@ -755,11 +822,11 @@ export const getChanges = (a: Diffable, b: Diffable, { previousA }: GetChangesOp
     return getArrayChanges(
       a,
       toYArrayElements(b),
-      Array.isArray(previousA) ? { "previousA": toYArrayElements(previousA) } : {}
+      Array.isArray(previousA) ? { nestedStrings, "previousA": toYArrayElements(previousA) } : { nestedStrings }
     );
   }
   if (isRecord(a) && isRecord(b)) {
-    return getRecordChanges(a, b);
+    return getRecordChanges(a, b, nestedStrings);
   }
 
   return [];

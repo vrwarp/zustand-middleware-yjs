@@ -408,6 +408,12 @@ const applyChangesToSharedType = (
           break;
         }
 
+        /*
+         * The nested change list in `value` is never read (for a string it
+         * is deferredTextDiff, see patchSharedType): a primitive string is
+         * written whole, and a shared type child is re-diffed by its own
+         * patchSharedType call.
+         */
         let childPreviousState: unknown;
 
         if (options.previousState && typeof options.previousState === "object") {
@@ -597,9 +603,16 @@ export const patchSharedType = (
     ? pickKeys(newState, syncedKeys)
     : newState;
 
+  /*
+   * Nested string pairs are deferred, not diffed: the applier writes a
+   * primitive string whole and diffs a Y.Text child in that child's own
+   * patchSharedType call, so a text diff here would only be thrown away.
+   * A top-level string pair (this call patching a Y.Text) is still diffed.
+   */
   const changes = getChanges(
     a as string | unknown[] | Record<string, unknown>,
-    b as string | unknown[] | Record<string, unknown>
+    b as string | unknown[] | Record<string, unknown>,
+    { "nestedStrings": "defer" }
   );
 
   // syncedKeys is intentionally NOT forwarded: it filters only the root diff.
@@ -765,8 +778,8 @@ const scopedPatchKey = (
      */
     const changes = unappliedInboundTargets !== undefined &&
       isArrayStructureUnchanged(existing, previousElements.length, unappliedInboundTargets)
-      ? getChanges(previousElements, nextValue, { "previousA": prevValue })
-      : getChanges(existing.toJSON() as unknown[], nextValue, { "previousA": prevValue });
+      ? getChanges(previousElements, nextValue, { "nestedStrings": "defer", "previousA": prevValue })
+      : getChanges(existing.toJSON() as unknown[], nextValue, { "nestedStrings": "defer", "previousA": prevValue });
 
     applyChangesToSharedType(
       existing,
@@ -832,7 +845,7 @@ const scopedPatchKey = (
 
   applyChangesToSharedType(
     parentMap,
-    getChanges(a, b),
+    getChanges(a, b, { "nestedStrings": "defer" }),
     b,
     // Threading `a` lets the pending recursion for this key reuse the
     // toJSON() snapshot taken above instead of serializing the subtree twice.
@@ -1105,6 +1118,10 @@ export interface PatchStateOptions {
  * an array or object is encountered. If oldState and newState are already
  * identical (indicated by an empty diff), then oldState is returned.
  *
+ * Strings, at any depth, are taken whole from newState: they are primitives
+ * (no identity to preserve), and applying their text diff would only rebuild
+ * newState's string after an O(NP) diff.
+ *
  * @param oldState - The state we want to patch.
  * @param newState - The state we want oldState to match after patching.
  * @param options - Top-level delete suppression (merge-defaults hydration).
@@ -1115,7 +1132,15 @@ export const patchState = <T>(
   newState: T,
   { suppressTopLevelDeleteKeys }: PatchStateOptions = {}
 ): T => {
-  let changes = getChanges(oldState as string | unknown[] | Record<string, unknown>, newState as string | unknown[] | Record<string, unknown>);
+  if (typeof oldState === "string" && typeof newState === "string") {
+    return newState;
+  }
+
+  let changes = getChanges(
+    oldState as string | unknown[] | Record<string, unknown>,
+    newState as string | unknown[] | Record<string, unknown>,
+    { "nestedStrings": "update" }
+  );
 
   if (suppressTopLevelDeleteKeys !== undefined) {
     changes = changes.filter(([type, property]) => {

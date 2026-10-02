@@ -13,6 +13,8 @@
  *    editing session (many aggregated Yjs items).
  * 3. Array diffing cost on large arrays (lookahead equality checks).
  * 4. Full-tree vs scoped outbound flush; inbound patch cost.
+ * 5. String writes whose nested text diff is computed and thrown away
+ *    (bench/string-diffs.ts).
  *
  * Run with: npm run bench
  */
@@ -31,6 +33,7 @@ import {
 } from "./harness";
 import { runInboundChildKeyBench } from "./inbound-child-keys";
 import { formatRecordDeleteReport, runRecordDeleteBench } from "./record-delete";
+import { runStringDiffBench } from "./string-diffs";
 import { runInboundBulkBench, runVersicleBench } from "./versicle";
 
 // Deterministic perf runs: disable the DEV-only sampled convergence check so
@@ -440,6 +443,20 @@ for (const isScopedDiff of [false, true]) {
       patchStore(store, remote);
     }
   ), { keys: KEY_COUNT });
+}
+
+/* -------------------------------------------------------------------------
+ * 6b. String writes: text diffs computed and thrown away
+ *
+ * `textDiffs` = text diffs one operation ran; `needed` = text diffs it
+ * requires (0 for a primitive string or a receiver, 1 for a Y.Text edit).
+ * Run alone: see the header of bench/string-diffs.ts.
+ * ---------------------------------------------------------------------- */
+
+console.error("  running string-write scenarios...");
+
+for (const result of runStringDiffBench()) {
+  record(result, result.meta ?? {});
 }
 
 /* -------------------------------------------------------------------------
