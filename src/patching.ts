@@ -1,8 +1,16 @@
 /* eslint-disable @typescript-eslint/no-use-before-define */
 import * as yjs from "yjs";
 import type { StoreApi } from "zustand/vanilla";
-import { getChanges } from "./diff";
-import { arrayToYArray, type MappingOptions, objectToYMap, stringToYText, toYArrayElements } from "./mapping";
+import { getChanges, isDeepEqualForDiff } from "./diff";
+import {
+  type ArrayPlacement,
+  arrayToYArray,
+  type MappingOptions,
+  objectToYMap,
+  stringToYText,
+  toJsonElement,
+  toYArrayElements,
+} from "./mapping";
 import { type Change, type ChangeType, changeType } from "./types";
 
 /**
@@ -93,12 +101,12 @@ const isClassInstance = (value: object): boolean => {
 
 /**
  * Whether doc JSON can enter store state as-is: every record, at any depth,
- * has Object.prototype as its prototype and no dangerous key. Class
- * instances are leaves.
+ * has Object.prototype as its prototype and no dangerous key, and no record
+ * holds a `jsonElementKeys` array. Class instances are leaves.
  */
-const isSafeDocJson = (json: unknown): boolean => {
+const isSafeDocJson = (json: unknown, jsonElementKeys: readonly string[]): boolean => {
   if (Array.isArray(json)) {
-    return json.every((item) => isSafeDocJson(item));
+    return json.every((item) => isSafeDocJson(item, jsonElementKeys));
   }
   if (!isPlainRecord(json)) {
     return true;
@@ -107,8 +115,49 @@ const isSafeDocJson = (json: unknown): boolean => {
     return isClassInstance(json);
   }
 
-  return Object.keys(json).every((key) => !isDangerousKey(key) && isSafeDocJson(json[key]));
+  return Object.keys(json).every((key) => {
+    const value = json[key];
+
+    return !isDangerousKey(key) &&
+      !(Array.isArray(value) && jsonElementKeys.includes(key)) &&
+      isSafeDocJson(value, jsonElementKeys);
+  });
 };
+
+/**
+ * A sanitized deep copy of doc JSON: records are rebuilt from their own keys
+ * minus the dangerous ones, arrays are copied, and class instances (binary)
+ * stay leaves, as in sanitizeDocJson.
+ */
+const copyDocJson = (json: unknown): unknown => {
+  if (Array.isArray(json)) {
+    return json.map((item) => copyDocJson(item));
+  }
+  if (!isPlainRecord(json) || (Object.getPrototypeOf(json) !== Object.prototype && isClassInstance(json))) {
+    return json;
+  }
+
+  const copy: Record<string, unknown> = {};
+
+  for (const key of Object.keys(json)) {
+    if (!isDangerousKey(key)) {
+      const value = json[key];
+
+      // Most fields are primitives: copy those without a call.
+      copy[key] = typeof value === "object" && value !== null ? copyDocJson(value) : value;
+    }
+  }
+
+  return copy;
+};
+
+/**
+ * Options for sanitizeDocJson.
+ */
+interface DocJsonOptions extends ArrayPlacement {
+  /** The `jsonElementKeys` mapping option. */
+  jsonElementKeys?: readonly string[];
+}
 
 /**
  * Returns doc JSON that is safe to put into store state.
@@ -120,21 +169,38 @@ const isSafeDocJson = (json: unknown): boolean => {
  * inbound diff never removes them. Every doc read that feeds store state goes
  * through here. Safe JSON (any honest peer's) comes back untouched; unsafe
  * records are rebuilt from their own keys minus the dangerous ones.
+ *
+ * The elements of a `jsonElementKeys` array always come back as sanitized
+ * copies. Y.Array#toJSON returns those plain JSON elements (ContentAny) BY
+ * REFERENCE, so store state would otherwise share objects with the doc's
+ * content: mutating one in place would change the local doc without a Yjs
+ * operation, and every later encode of it (a persistence compaction, a sync
+ * to a new peer) would carry content the other replicas never received. The
+ * records holding such an array are rebuilt rather than mutated, since any
+ * of them may itself be a plain JSON doc value. Copying here, in the same
+ * walk that checks the rest, visits each element once.
+ *
+ * @param json - Doc JSON.
+ * @param options - The `jsonElementKeys` option, and the key `json` is stored under, if any.
+ * @returns Doc JSON safe to put into store state.
  */
-const sanitizeDocJson = (json: unknown): unknown => {
-  if (isSafeDocJson(json)) {
+const sanitizeDocJson = (json: unknown, { jsonElementKeys = [], key }: DocJsonOptions = {}): unknown => {
+  if (Array.isArray(json) && key !== undefined && jsonElementKeys.includes(key)) {
+    return json.map((element) => copyDocJson(element));
+  }
+  if (isSafeDocJson(json, jsonElementKeys)) {
     return json;
   }
   if (Array.isArray(json)) {
-    return json.map((item) => sanitizeDocJson(item));
+    return json.map((item) => sanitizeDocJson(item, { jsonElementKeys }));
   }
 
   const record = json as Record<string, unknown>;
   const sanitized: Record<string, unknown> = {};
 
-  for (const key of Object.keys(record)) {
-    if (!isDangerousKey(key)) {
-      sanitized[key] = sanitizeDocJson(record[key]);
+  for (const childKey of Object.keys(record)) {
+    if (!isDangerousKey(childKey)) {
+      sanitized[childKey] = sanitizeDocJson(record[childKey], { jsonElementKeys, "key": childKey });
     }
   }
 
@@ -335,6 +401,16 @@ const asStoredElements = (value: unknown): unknown =>
   { return Array.isArray(value) ? toYArrayElements(value) : value };
 
 /**
+ * Whether a Y.Array is stored under one of `jsonElementKeys` in its parent
+ * Y.Map (an array nested directly in another array is under no key).
+ */
+const isJsonElementArray = (yarray: yjs.Array<unknown>, jsonElementKeys: readonly string[]): boolean => {
+  const key = yarray._item?.parentSub;
+
+  return typeof key === "string" && jsonElementKeys.includes(key);
+};
+
+/**
  * Applies an already-computed change list to a yjs shared type. Extracted from
  * patchSharedType so the scoped-diff path can reuse the exact same
  * insert/update/delete/pending application semantics (including the verbatim
@@ -355,6 +431,7 @@ const applyChangesToSharedType = (
     disableYText = false,
     previousState,
     yTextKeys = [],
+    jsonElementKeys = [],
     sharedTypeJson,
   }: ApplyChangesOptions = {}
 ): void => {
@@ -364,7 +441,16 @@ const applyChangesToSharedType = (
    * that form; index the new and the previous state through it as well.
    */
   const elementState = asStoredElements(newState);
-  const options = { atomicKeys, disableYText, "previousState": asStoredElements(previousState), yTextKeys };
+  const options = {
+    atomicKeys,
+    disableYText,
+    "previousState": asStoredElements(previousState),
+    yTextKeys,
+    jsonElementKeys,
+  };
+
+  // Object and array elements of a jsonElementKeys array are plain JSON.
+  const isJsonElements = sharedType instanceof yjs.Array && isJsonElementArray(sharedType, jsonElementKeys);
 
   // Y.Text edits arrive as per-character changes and Y.Array edits as
   // per-element changes; apply both as runs instead.
@@ -403,7 +489,7 @@ const applyChangesToSharedType = (
                 sharedType.set(prop, value);
               }
             } else if (Array.isArray(value)) {
-              sharedType.set(prop, arrayToYArray(value, options));
+              sharedType.set(prop, arrayToYArray(value, { ...options, "key": prop }));
             } else if (typeof value === "object" && value !== null) {
               sharedType.set(prop, objectToYMap(value as Record<string, unknown>, options));
             } else {
@@ -421,6 +507,9 @@ const applyChangesToSharedType = (
             sharedType.insert(index, values.map((element) => {
               if (typeof element === "string") {
                 return options.disableYText ? element : stringToYText(element);
+              }
+              if (isJsonElements && typeof element === "object" && element !== null) {
+                return toJsonElement(element);
               }
               if (Array.isArray(element)) {
                 return arrayToYArray(element, options);
@@ -585,6 +674,7 @@ const applyChangesToSharedType = (
                   atomicKeys,
                   disableYText,
                   yTextKeys,
+                  jsonElementKeys,
                   previousState: childPreviousState,
                   precomputedJson: childJson,
                 }
@@ -596,7 +686,7 @@ const applyChangesToSharedType = (
                * shared type to recurse into — replace it with the mapped value.
                */
               sharedType.set(prop, Array.isArray(newValue)
-                ? arrayToYArray(newValue, options)
+                ? arrayToYArray(newValue, { ...options, "key": prop })
                 : objectToYMap(newValue as Record<string, unknown>, options));
             }
           }
@@ -616,7 +706,23 @@ const applyChangesToSharedType = (
             }
           }
 
-          if (isTextMappingMismatch) {
+          if (isJsonElements && typeof newValue === "object" && newValue !== null) {
+            /*
+             * A JSON element (or a shared-type element written before the
+             * option, which this migrates) is replaced whole, and only when
+             * its stored form changes: a pending change can also come from
+             * state the doc never stores (a function value, a "constructor"
+             * key), and rewriting the element for it would churn the doc on
+             * every flush.
+             */
+            const element = toJsonElement(newValue);
+            const stored = existing instanceof yjs.AbstractType ? existing.toJSON() : existing;
+
+            if (!isDeepEqualForDiff(stored, element)) {
+              sharedType.delete(index);
+              sharedType.insert(index, [element]);
+            }
+          } else if (isTextMappingMismatch) {
             sharedType.delete(index);
 
             const isWantsYText = !options.disableYText;
@@ -635,7 +741,7 @@ const applyChangesToSharedType = (
               patchSharedType(
                 existing as yjs.Map<unknown> | yjs.Array<unknown> | yjs.Text,
                 newValue,
-                { atomicKeys, disableYText, yTextKeys, previousState: childPreviousState }
+                { atomicKeys, disableYText, yTextKeys, jsonElementKeys, previousState: childPreviousState }
               );
             } else {
               // Plain JSON object/array element (ContentAny): replace it with the mapped value.
@@ -679,6 +785,7 @@ export const patchSharedType = (
     disableYText,
     previousState,
     yTextKeys,
+    jsonElementKeys,
     syncedKeys,
     precomputedJson,
   }: PatchOptions = {}
@@ -726,6 +833,7 @@ export const patchSharedType = (
     disableYText,
     previousState,
     yTextKeys,
+    jsonElementKeys,
     sharedTypeJson: a,
   });
 };
@@ -763,6 +871,7 @@ export const patchSharedTypeScoped = (
     atomicKeys,
     disableYText,
     yTextKeys,
+    jsonElementKeys,
     syncedKeys,
     backfillAbsentKeys,
     unappliedInboundTargets,
@@ -770,7 +879,7 @@ export const patchSharedTypeScoped = (
 ): void => {
   const prevRecord: Record<string, unknown> = isPlainRecord(previousState) ? previousState : {};
   const newRecord: Record<string, unknown> = isPlainRecord(newState) ? newState : {};
-  const options: ScopedKeyOptions = { atomicKeys, disableYText, yTextKeys, unappliedInboundTargets };
+  const options: ScopedKeyOptions = { atomicKeys, disableYText, yTextKeys, jsonElementKeys, unappliedInboundTargets };
 
   const keys = new Set<string>([...Object.keys(prevRecord), ...Object.keys(newRecord)]);
 
@@ -1277,6 +1386,12 @@ export interface InboundStateOptions {
    * Undefined = legacy 'replace'.
    */
   suppressTopLevelDeleteKeys?: ReadonlySet<string>;
+
+  /**
+   * The `jsonElementKeys` mapping option: elements of arrays under these
+   * keys are plain JSON in the doc and are copied on their way into state.
+   */
+  jsonElementKeys?: readonly string[];
 }
 
 /**
@@ -1295,10 +1410,10 @@ export interface InboundStateOptions {
 export const computeInboundState = <T>(
   currentState: T,
   newState: unknown,
-  { syncedKeys, suppressTopLevelDeleteKeys }: InboundStateOptions = {}
+  { syncedKeys, suppressTopLevelDeleteKeys, jsonElementKeys }: InboundStateOptions = {}
 ): T => {
   const patchOptions: PatchStateOptions = { suppressTopLevelDeleteKeys };
-  const docJson = sanitizeDocJson(newState);
+  const docJson = sanitizeDocJson(newState, { jsonElementKeys });
 
   if (syncedKeys === undefined) {
     return patchState(currentState, docJson as T, patchOptions);
@@ -1356,7 +1471,7 @@ export const computeInboundState = <T>(
 export const patchStore = <S>(
   store: StoreApi<S>,
   newState: unknown,
-  { syncedKeys, suppressTopLevelDeleteKeys }: InboundStateOptions = {}
+  { syncedKeys, suppressTopLevelDeleteKeys, jsonElementKeys }: InboundStateOptions = {}
 ): void => {
   // Clone the oldState instead of using it directly from store.getState().
   const oldState = {
@@ -1364,7 +1479,7 @@ export const patchStore = <S>(
   };
 
   store.setState(
-    computeInboundState(oldState, newState, { syncedKeys, suppressTopLevelDeleteKeys }) as S,
+    computeInboundState(oldState, newState, { syncedKeys, suppressTopLevelDeleteKeys, jsonElementKeys }) as S,
     true // Replace with the patched state.
   );
 };
@@ -1381,11 +1496,19 @@ export type InboundPath = readonly (string | number)[];
  */
 const absent = Symbol("absent");
 
-/** Store-safe JSON of a doc value: a shared type is serialized, anything else is already JSON. */
-const readDocJson = (value: unknown): unknown =>
-  { return sanitizeDocJson(value instanceof yjs.AbstractType ? value.toJSON() : value) };
+/**
+ * Store-safe JSON of a doc value: a shared type is serialized, anything else
+ * is already JSON. `options.key` is the key the value is stored under, so the
+ * elements of a `jsonElementKeys` array come back as copies (sanitizeDocJson).
+ */
+const readDocJson = (value: unknown, options: DocJsonOptions): unknown =>
+  { return sanitizeDocJson(value instanceof yjs.AbstractType ? value.toJSON() : value, options) };
 
-const readDocJsonAtPath = (dataMap: yjs.Map<unknown>, path: InboundPath): unknown => {
+const readDocJsonAtPath = (
+  dataMap: yjs.Map<unknown>,
+  path: InboundPath,
+  jsonElementKeys: readonly string[] | undefined
+): unknown => {
   let node: unknown = dataMap;
 
   for (const step of path) {
@@ -1408,7 +1531,7 @@ const readDocJsonAtPath = (dataMap: yjs.Map<unknown>, path: InboundPath): unknow
     }
   }
 
-  return readDocJson(node);
+  return readDocJson(node, { jsonElementKeys, "key": String(path.at(-1)) });
 };
 
 /** The Y.Map at `path` (map keys only), or undefined when a step is missing or not a Y.Map. */
@@ -1619,6 +1742,7 @@ const reconcileStateValue = (stateValue: unknown, docValue: unknown): unknown =>
  * @param docMap - The Y.Map at the same path.
  * @param keys - The changed keys (no duplicates).
  * @param owned - Containers this patch already copied.
+ * @param jsonElementKeys - The `jsonElementKeys` mapping option.
  * @returns The updated record, or `record` when it is unchanged or was
  * updated in place.
  */
@@ -1626,7 +1750,8 @@ const applyChangedKeys = (
   record: Record<string, unknown>,
   docMap: yjs.Map<unknown>,
   keys: readonly string[],
-  owned: WeakSet<object>
+  owned: WeakSet<object>,
+  jsonElementKeys: readonly string[] | undefined
 ): Record<string, unknown> => {
   let next = record;
   let removedKeys: Set<string> | undefined;
@@ -1654,7 +1779,7 @@ const applyChangedKeys = (
       continue;
     }
 
-    const docValue = readDocJson(docMap.get(key));
+    const docValue = readDocJson(docMap.get(key), { jsonElementKeys, key });
     const patched = isInState ? reconcileStateValue(stateValue, docValue) : docValue;
 
     if (!isInState || !Object.is(patched, stateValue)) {
@@ -1733,7 +1858,7 @@ export const computeInboundStateForPaths = <T>(
   currentState: T,
   dataMap: yjs.Map<unknown>,
   paths: readonly InboundPath[],
-  { syncedKeys, keyPaths = [] }: InboundPathOptions = {}
+  { syncedKeys, keyPaths = [], jsonElementKeys }: InboundPathOptions = {}
 ): T | undefined => {
   const keyPathSet = new Set(keyPaths);
   const changedKeysByParent = new Map<string, { parentPath: InboundPath; keys: string[] }>();
@@ -1773,7 +1898,7 @@ export const computeInboundStateForPaths = <T>(
       return undefined;
     }
 
-    const updated = applyChangedKeys(record, docMap, keys, owned);
+    const updated = applyChangedKeys(record, docMap, keys, owned, jsonElementKeys);
 
     if (updated !== record) {
       next = setStateAtPath(next, parentPath, 0, updated, owned);
@@ -1781,7 +1906,7 @@ export const computeInboundStateForPaths = <T>(
   }
 
   for (const path of nodePaths) {
-    const docValue = readDocJsonAtPath(dataMap, path);
+    const docValue = readDocJsonAtPath(dataMap, path, jsonElementKeys);
     const stateValue = readStateAtPath(next, path);
 
     if (docValue === absent || stateValue === absent) {

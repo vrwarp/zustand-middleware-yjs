@@ -19,8 +19,11 @@
  * 3. The readingSessions sawtooth (500 -> 300 head splice) — a 201-element
  *    block removal, far beyond the differ's deep-equality lookahead window.
  * 4. Inbound cost on a second client receiving a page turn.
+ * 5. (runColdStartRepresentationBench) Cold-start cost — decode, toJSON,
+ *    hydration, structs, snapshot bytes — of storing each reading session
+ *    as a Y.Map vs as a plain JSON element of the same Y.Array.
  *
- * `runInboundBulkBench` (end of file) covers the other inbound shape: one
+ * `runInboundBulkBench` (later in this file) covers the other inbound shape: one
  * remote batch that changes many sibling records at once (offline catch-up,
  * a backfill migration, "mark all read").
  */
@@ -1027,5 +1030,519 @@ export const runSharedMapBench = async (
     header,
     divider,
     ...lines,
+  ].join("\n");
+};
+
+/* -------------------------------------------------------------------------
+ * Cold-start cost of the readingSessions representation
+ * (json-leaf-records-for-cold-start).
+ *
+ * By default the middleware maps every object to a Y.Map, so each
+ * immutable, append-only reading session costs 1 ContentType item + 1 keyed
+ * item per field (6 structs), and each session a trim removes leaves 2
+ * permanent structs (the deleted wrapper + the merged GC run of its fields).
+ * With the opt-in `jsonElementKeys: ["readingSessions"]` the session
+ * ELEMENTS are plain JSON values (ContentAny) inside the same Y.Array.
+ *
+ * Fresh docs are written by the real middleware in both representations.
+ * Aged docs (hundreds of page turns per device) are built by replaying the
+ * identical operations directly with Yjs, because building Y.Map aged docs
+ * through the middleware is slow in Yjs itself. Fidelity: before anything is
+ * measured, each replay is checked against the real middleware (2 books,
+ * same page-turn history) — identical JSON, struct count within 0.1%.
+ *
+ * Measured per doc: struct count, tombstones, encoded snapshot bytes
+ * (pinned client ID, so deterministic), Y.applyUpdate into a fresh doc (what
+ * y-idb does at every launch), map.toJSON(), and cold-start hydration of a
+ * real middleware store attached to the decoded doc, plus the number of
+ * Y.Map#toJSON calls that hydration makes.
+ * ---------------------------------------------------------------------- */
+
+type SessionRepresentation = "ymap" | "json";
+
+const representationLabel = (representation: SessionRepresentation): string => {
+  return representation === "ymap" ? "Y.Map elements (default)" : "JSON elements (jsonElementKeys)";
+};
+
+const representationOptions = (representation: SessionRepresentation): { jsonElementKeys?: string[] } => {
+  return representation === "json" ? { "jsonElementKeys": ["readingSessions"] } : {};
+};
+
+/** Number of readingSessions elements stored as shared types (Y.Map) in a progress doc. */
+const countSharedTypeSessions = (doc: yjs.Doc): number => {
+  const progress = doc.getMap("progress").get("progress") as yjs.Map<yjs.Map<yjs.Map<unknown>>>;
+  let count = 0;
+
+  progress.forEach((perBook) => {
+    perBook.forEach((perDevice) => {
+      for (const element of (perDevice.get("readingSessions") as yjs.Array<unknown>).toArray()) {
+        if (element instanceof yjs.AbstractType) {
+          count = count + 1;
+        }
+      }
+    });
+  });
+
+  return count;
+};
+
+/**
+ * Mirrors objectToYMap/arrayToYArray with `disableYText` (one Y.Array insert
+ * per array, prelim types built bottom-up), except that under
+ * `readingSessions` the JSON representation keeps object elements as plain
+ * values.
+ *
+ * @param value - The plain value to map.
+ * @param isJsonElements - Store object elements of this array as JSON.
+ * @param representation - Which session representation to build.
+ * @returns The prelim shared type (or the primitive itself).
+ */
+const toPrelim = (value: unknown, isJsonElements: boolean, representation: SessionRepresentation): unknown => {
+  if (Array.isArray(value)) {
+    const yarray = new yjs.Array<unknown>();
+
+    yarray.insert(0, value.map((element: unknown) => {
+      if (typeof element === "object" && element !== null && !isJsonElements) {
+        return toPrelim(element, false, representation);
+      }
+
+      return element;
+    }));
+
+    return yarray;
+  }
+
+  if (typeof value === "object" && value !== null) {
+    const ymap = new yjs.Map<unknown>();
+
+    for (const [key, child] of Object.entries(value)) {
+      ymap.set(key, toPrelim(child, key === "readingSessions" && representation === "json", representation));
+    }
+
+    return ymap;
+  }
+
+  return value;
+};
+
+interface ReplayedDoc {
+  doc: yjs.Doc;
+  removedSessions: number;
+}
+
+/**
+ * Builds a progress doc by replaying page turns directly with Yjs: the
+ * initial tree (300 sessions per device, written in one transaction like the
+ * middleware's first flush), then `turnsPerDevice` page turns per device
+ * branch, each one transaction that rewrites currentCfi/percentage/lastRead
+ * and appends one session (trimming the 500 cap to the last 300 first), in the
+ * order the scoped flush applies them.
+ *
+ * @param books - Library size.
+ * @param turnsPerDevice - Page turns per (book, device) branch.
+ * @param representation - Session element representation.
+ * @returns The doc and how many sessions trims removed.
+ */
+const replayProgressDoc = (books: number, turnsPerDevice: number, representation: SessionRepresentation): ReplayedDoc => {
+  const doc = new yjs.Doc();
+
+  doc.clientID = 1;
+
+  const tree = makeProgressTree(books, 300);
+  const prelim = toPrelim(tree, false, representation) as yjs.Map<unknown>;
+
+  doc.transact(() => {
+    doc.getMap("progress").set("progress", prelim);
+  });
+
+  const progress = doc.getMap("progress").get("progress") as yjs.Map<unknown>;
+  let removedSessions = 0;
+
+  for (let turn = 0; turn < turnsPerDevice; turn = turn + 1) {
+    for (let book = 0; book < books; book = book + 1) {
+      const perBook = progress.get(`book-${String(book)}`) as yjs.Map<unknown>;
+
+      for (const [deviceIndex, deviceId] of deviceIds.entries()) {
+        const perDevice = perBook.get(deviceId) as yjs.Map<unknown>;
+        const sessions = perDevice.get("readingSessions") as yjs.Array<unknown>;
+        const n = 1_000_000 + (book * 10_000) + (deviceIndex * 5_000) + turn;
+        const remove = sessions.length + 1 > MAX_READING_SESSIONS
+          ? sessions.length + 1 - PRUNED_READING_SESSIONS
+          : 0;
+
+        removedSessions = removedSessions + remove;
+        doc.transact(() => {
+          perDevice.set("currentCfi", `epubcfi(/6/4!/4/${String(n)}:0)`);
+          perDevice.set("percentage", (n % 100) / 100);
+          perDevice.set("lastRead", n);
+
+          if (remove > 0) {
+            sessions.delete(0, remove);
+          }
+
+          sessions.push([representation === "json" ? makeSession(n) : toPrelim(makeSession(n), false, representation)]);
+        });
+      }
+    }
+  }
+
+  return { doc, removedSessions };
+};
+
+/** Applies the same page-turn history through the real middleware. */
+const middlewareProgressDoc = (books: number, turnsPerDevice: number, representation: SessionRepresentation): yjs.Doc => {
+  const doc = new yjs.Doc();
+
+  doc.clientID = 1;
+
+  const store = createStore<{ progress: ProgressTree }>()(
+    yjsMiddleware(
+      doc,
+      "progress",
+      () => ({ "progress": makeProgressTree(books, 300) }),
+      { "disableYText": true, "scopedDiff": true, "syncedKeys": ["progress"], ...representationOptions(representation) }
+    )
+  );
+  const handle = getYjsStoreHandle(store);
+
+  store.setState((state) => ({ "progress": { ...state.progress } }));
+  handle.flush();
+
+  for (let turn = 0; turn < turnsPerDevice; turn = turn + 1) {
+    for (let book = 0; book < books; book = book + 1) {
+      const bookId = `book-${String(book)}`;
+
+      deviceIds.forEach((deviceId, deviceIndex) => {
+        const n = 1_000_000 + (book * 10_000) + (deviceIndex * 5_000) + turn;
+
+        store.setState((state) => {
+          const perBook = state.progress[bookId];
+          const perDevice = perBook[deviceId];
+          let sessions = [...perDevice.readingSessions, makeSession(n)];
+
+          if (sessions.length > MAX_READING_SESSIONS) {
+            sessions = sessions.slice(-PRUNED_READING_SESSIONS);
+          }
+
+          return {
+            "progress": {
+              ...state.progress,
+              [bookId]: {
+                ...perBook,
+                [deviceId]: {
+                  ...perDevice,
+                  "currentCfi": `epubcfi(/6/4!/4/${String(n)}:0)`,
+                  "percentage": (n % 100) / 100,
+                  "lastRead": n,
+                  "readingSessions": sessions,
+                },
+              },
+            },
+          };
+        });
+        handle.flush();
+      });
+    }
+  }
+
+  return doc;
+};
+
+const countTombstones = (doc: yjs.Doc): number => {
+  let count = 0;
+
+  doc.store.clients.forEach((structs) => {
+    for (const struct of structs) {
+      if (struct.deleted) {
+        count = count + 1;
+      }
+    }
+  });
+
+  return count;
+};
+
+/** Runs `fn` while counting Y.Map#toJSON calls (nested calls included). */
+const countMapToJsonCalls = (fn: () => void): number => {
+  const prototype = yjs.Map.prototype as unknown as { toJSON: (this: yjs.Map<unknown>) => unknown };
+  const original = prototype.toJSON;
+  let calls = 0;
+
+  prototype.toJSON = function countingToJson(this: yjs.Map<unknown>) {
+    calls = calls + 1;
+
+    return original.call(this);
+  };
+
+  try {
+    fn();
+  } finally {
+    prototype.toJSON = original;
+  }
+
+  return calls;
+};
+
+const hydrateProgressStore = (doc: yjs.Doc, representation: SessionRepresentation): StoreApi<{ progress: ProgressTree }> => {
+  return createStore<{ progress: ProgressTree }>()(
+    yjsMiddleware(
+      doc,
+      "progress",
+      () => ({ "progress": {} }),
+      { "disableYText": true, "scopedDiff": true, "syncedKeys": ["progress"], ...representationOptions(representation) }
+    )
+  );
+};
+
+export interface ColdStartRow {
+  doc: string;
+  representation: string;
+  books: number;
+  liveSessions: number;
+  structs: number;
+  tombstones: number;
+  bytes: number;
+  decodeMs: number;
+  toJsonMs: number;
+  hydrationMs: number;
+  hydrationMapToJsonCalls: number;
+}
+
+const measureColdStart = (docLabel: string, books: number, representation: SessionRepresentation, doc: yjs.Doc): ColdStartRow => {
+  const update = yjs.encodeStateAsUpdate(doc);
+
+  const decode = bench(
+    `cold-start decode ${docLabel} ${representation}`,
+    (fixture) => { yjs.applyUpdate(fixture as yjs.Doc, update); },
+    { "runs": 5, "warmupRuns": 1, "setup": () => new yjs.Doc() }
+  );
+
+  const decoded = new yjs.Doc();
+
+  yjs.applyUpdate(decoded, update);
+
+  const toJson = bench(
+    `cold-start toJSON ${docLabel} ${representation}`,
+    () => { decoded.getMap("progress").toJSON(); },
+    { "runs": 7, "warmupRuns": 2 }
+  );
+
+  /*
+   * Each run attaches a store to a freshly decoded doc (decoded in untimed
+   * setup), as an app launch does. Stores attached to one shared doc stay
+   * reachable through its observers, so their hydrated state would pile up
+   * across runs and bill later runs for collecting it.
+   */
+  const hydration = bench(
+    `cold-start hydration ${docLabel} ${representation}`,
+    (fixture) => {
+      const store = hydrateProgressStore(fixture as yjs.Doc, representation);
+
+      if (Object.keys(store.getState().progress).length !== books) {
+        throw new Error("hydration did not populate the store");
+      }
+    },
+    {
+      "runs": 7,
+      "warmupRuns": 2,
+      "setup": () => {
+        const fresh = new yjs.Doc();
+
+        yjs.applyUpdate(fresh, update);
+
+        return fresh;
+      },
+    }
+  );
+
+  const hydrationMapToJsonCalls = countMapToJsonCalls(() => {
+    hydrateProgressStore(decoded, representation);
+  });
+  const hydratedProgress = (decoded.getMap("progress").toJSON() as { progress: ProgressTree }).progress;
+  let liveSessions = 0;
+
+  for (const perBook of Object.values(hydratedProgress)) {
+    for (const perDevice of Object.values(perBook)) {
+      liveSessions = liveSessions + perDevice.readingSessions.length;
+    }
+  }
+
+  return {
+    "doc": docLabel,
+    "representation": representationLabel(representation),
+    books,
+    liveSessions,
+    "structs": countItems(doc),
+    "tombstones": countTombstones(doc),
+    "bytes": update.byteLength,
+    "decodeMs": decode.medianMs,
+    "toJsonMs": toJson.medianMs,
+    "hydrationMs": hydration.medianMs,
+    hydrationMapToJsonCalls,
+  };
+};
+
+interface SessionsState {
+  sessions: ReadingSession[];
+  lastRead: number;
+}
+
+/**
+ * Per-record counters: structs one page turn's appended session adds, and
+ * tombstones per session a 500-to-300 trim removes, through the real
+ * middleware.
+ *
+ * @param representation - Session element representation.
+ * @returns Structs per appended session and tombstones per trimmed session.
+ */
+const perRecordCounters = (representation: SessionRepresentation): { appendStructs: number; trimTombstonesPerRecord: number } => {
+  const doc = new yjs.Doc();
+
+  doc.clientID = 1;
+
+  const store = createStore<SessionsState>()(
+    yjsMiddleware(
+      doc,
+      "progress",
+      (): SessionsState => ({ "sessions": [], "lastRead": 0 }),
+      {
+        "disableYText": true,
+        "scopedDiff": true,
+        ...(representation === "json" ? { "jsonElementKeys": ["sessions"] } : {}),
+      }
+    )
+  );
+  const handle = getYjsStoreHandle(store);
+  const pageTurn = (n: number): void => {
+    store.setState((state) => ({ "lastRead": n, "sessions": [...state.sessions, makeSession(n)] }));
+    handle.flush();
+  };
+  const trim = (): void => {
+    store.setState((state) => ({ "sessions": state.sessions.slice(-PRUNED_READING_SESSIONS) }));
+    handle.flush();
+  };
+
+  // Each page turn also rewrites a scalar, so consecutive sessions never share a struct.
+  for (let n = 1; n < MAX_READING_SESSIONS; n = n + 1) {
+    pageTurn(n);
+  }
+
+  const structsBefore = countItems(doc);
+
+  pageTurn(MAX_READING_SESSIONS);
+
+  // Minus the one new item of the scalar rewrite.
+  const appendStructs = countItems(doc) - structsBefore - 1;
+  const tombstonesBefore = countTombstones(doc);
+
+  trim();
+
+  return {
+    appendStructs,
+    "trimTombstonesPerRecord": (countTombstones(doc) - tombstonesBefore) / (MAX_READING_SESSIONS - PRUNED_READING_SESSIONS),
+  };
+};
+
+export interface ColdStartBenchOptions {
+  freshBooks?: number[];
+  agedBooks?: number;
+  agedTurnsPerDevice?: number;
+}
+
+/**
+ * Runs the cold-start representation comparison and formats a report.
+ *
+ * @param options - Scales: fresh-snapshot library sizes, and the aged doc's
+ * library size and page turns per device (700 = three 500-to-300 trims per
+ * branch).
+ * @returns The report as a markdown string.
+ */
+export const runColdStartRepresentationBench = ({
+  freshBooks = [10, 40, 120],
+  agedBooks = 10,
+  agedTurnsPerDevice = 700,
+}: ColdStartBenchOptions = {}): string => {
+  // --- Fidelity: each replay must reproduce the middleware's doc. ---
+  console.error("  cold-start: checking replay fidelity against the middleware (2 books)...");
+
+  const fidelityTurns = Math.min(agedTurnsPerDevice, 700);
+  const viaMiddleware = middlewareProgressDoc(2, fidelityTurns, "ymap");
+  const viaMiddlewareJson = middlewareProgressDoc(2, fidelityTurns, "json");
+  const viaReplay = replayProgressDoc(2, fidelityTurns, "ymap").doc;
+  const viaReplayJson = replayProgressDoc(2, fidelityTurns, "json").doc;
+  const middlewareJson = JSON.stringify(viaMiddleware.getMap("progress").toJSON());
+  const structDrift = (replayed: yjs.Doc, built: yjs.Doc): number => {
+    return Math.abs(countItems(replayed) - countItems(built)) / countItems(built);
+  };
+
+  if (JSON.stringify(viaReplay.getMap("progress").toJSON()) !== middlewareJson ||
+    JSON.stringify(viaMiddlewareJson.getMap("progress").toJSON()) !== middlewareJson ||
+    JSON.stringify(viaReplayJson.getMap("progress").toJSON()) !== middlewareJson ||
+    structDrift(viaReplay, viaMiddleware) > 0.001 ||
+    structDrift(viaReplayJson, viaMiddlewareJson) > 0.001) {
+    throw new Error("replay does not reproduce the middleware doc");
+  }
+
+  // The two representations must differ only in how sessions are stored.
+  if (countSharedTypeSessions(viaMiddlewareJson) !== 0 ||
+    countSharedTypeSessions(viaReplayJson) !== 0 ||
+    countSharedTypeSessions(viaReplay) !== countSharedTypeSessions(viaMiddleware)) {
+    throw new Error("session representation is not the intended one");
+  }
+
+  const fidelityLine = `Replay fidelity (2 books, ${String(fidelityTurns)} turns/device): Y.Map elements ` +
+    `${String(countItems(viaMiddleware))} structs via the middleware vs ${String(countItems(viaReplay))} replayed; ` +
+    `JSON elements ${String(countItems(viaMiddlewareJson))} via the middleware vs ` +
+    `${String(countItems(viaReplayJson))} replayed; identical JSON throughout.`;
+
+  const rows: ColdStartRow[] = [];
+
+  for (const books of freshBooks) {
+    console.error(`  cold-start: fresh snapshot, ${String(books)} books...`);
+
+    // The doc the real middleware writes on its first flush.
+    rows.push(measureColdStart("fresh", books, "ymap", middlewareProgressDoc(books, 0, "ymap")));
+    rows.push(measureColdStart("fresh", books, "json", middlewareProgressDoc(books, 0, "json")));
+  }
+
+  const agedLabel = `aged (${String(agedTurnsPerDevice)} turns/device)`;
+  const removed: Partial<Record<SessionRepresentation, number>> = {};
+
+  for (const representation of ["ymap", "json"] as const) {
+    console.error(`  cold-start: aged doc, ${String(agedBooks)} books, ${representation}...`);
+
+    const replayed = replayProgressDoc(agedBooks, agedTurnsPerDevice, representation);
+
+    removed[representation] = replayed.removedSessions;
+    rows.push(measureColdStart(agedLabel, agedBooks, representation, replayed.doc));
+  }
+
+  const ymapCounters = perRecordCounters("ymap");
+  const jsonCounters = perRecordCounters("json");
+
+  const header =
+    "| doc | representation | books | live sessions | structs | tombstones | snapshot bytes | " +
+    "Y.applyUpdate (ms) | map.toJSON (ms) | hydration (ms) | Y.Map#toJSON calls in hydration |";
+  const divider = "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|";
+  const lines = rows.map((row) => {
+    return `| ${row.doc} | ${row.representation} | ${String(row.books)} | ${String(row.liveSessions)} | ` +
+      `${String(row.structs)} | ${String(row.tombstones)} | ${String(row.bytes)} | ` +
+      `${row.decodeMs.toFixed(1)} | ${row.toJsonMs.toFixed(1)} | ${row.hydrationMs.toFixed(1)} | ` +
+      `${String(row.hydrationMapToJsonCalls)} |`;
+  });
+
+  return [
+    "## Cold-start cost of the readingSessions representation (json-leaf-records-for-cold-start)",
+    "",
+    header,
+    divider,
+    ...lines,
+    "",
+    `Per record: structs added by one appended session = ${String(ymapCounters.appendStructs)} (Y.Map) vs ` +
+      `${String(jsonCounters.appendStructs)} (JSON); tombstones left per session a 500 -> 300 trim removes = ` +
+      `${ymapCounters.trimTombstonesPerRecord.toFixed(2)} (Y.Map) vs ${jsonCounters.trimTombstonesPerRecord.toFixed(2)} (JSON). ` +
+      `Aged doc: ${String(removed.ymap ?? 0)} sessions trimmed.`,
+    "",
+    fidelityLine,
   ].join("\n");
 };

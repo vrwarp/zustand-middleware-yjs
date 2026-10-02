@@ -10,6 +10,11 @@ export interface MappingOptions {
   disableYText?: boolean;
   /** Keys that should be stored as Y.Text even if disableYText is true. */
   yTextKeys?: string[];
+  /**
+   * Keys whose arrays store their object and array elements as plain JSON
+   * values (toJsonElement) instead of nested Y.Maps / Y.Arrays.
+   */
+  jsonElementKeys?: string[];
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> => {
@@ -59,10 +64,64 @@ export const toYArrayElements = (array: unknown[]): unknown[] => {
 };
 
 /**
+ * The plain JSON form of a `jsonElementKeys` array element: exactly what
+ * objectToYMap (or arrayToYArray) followed by toJSON() would read back, but
+ * built without shared types. Own enumerable entries only; function values
+ * and the keys "__proto__", "constructor" and "prototype" are skipped;
+ * nested arrays are normalized like toYArrayElements; class instances (Date,
+ * Uint8Array, ...) become records of their own entries; every other value is
+ * kept as is, including undefined, NaN, Infinity and -0 (lib0 encodes all of
+ * them).
+ *
+ * Storing exactly this form keeps an element diff-equal to the state it came
+ * from (so an unchanged element is never rewritten), lets it round-trip
+ * lib0's encoding unchanged (so the local doc holds what peers decode), and
+ * shares no object with store state (so mutating state never mutates the
+ * doc's content behind Yjs' back).
+ *
+ * @param value - The element to convert.
+ * @returns A fresh plain JSON copy (or the primitive itself).
+ */
+export const toJsonElement = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return toYArrayElements(value).map((element) => toJsonElement(element));
+  }
+  if (!isObject(value)) {
+    return value;
+  }
+
+  const json: Record<string, unknown> = {};
+
+  for (const [key, field] of Object.entries(value)) {
+    if (
+      key === "__proto__" ||
+      key === "constructor" ||
+      key === "prototype" ||
+      typeof field === "function"
+    ) {
+      continue;
+    }
+    json[key] = toJsonElement(field);
+  }
+
+  return json;
+};
+
+/**
+ * Where a value is going to be stored.
+ */
+export interface ArrayPlacement {
+  /** The Y.Map key it is stored under; none for an element of an array. */
+  key?: string;
+}
+
+/**
  * Converts an array to a Y.Array object.
  *
  * @param array - The array to convert.
- * @param mappingOptions - The mapping options.
+ * @param mappingOptions - The mapping options, plus the key the array is
+ * stored under: under a `jsonElementKeys` key, its object and array elements
+ * are stored as plain JSON (toJsonElement) instead of nested shared types.
  * @returns A Y.Array object representing the array.
  */
 export const arrayToYArray = (
@@ -71,15 +130,20 @@ export const arrayToYArray = (
     atomicKeys = [],
     disableYText = false,
     yTextKeys = [],
-  }: MappingOptions = {}
+    jsonElementKeys = [],
+    key,
+  }: MappingOptions & ArrayPlacement = {}
 ): yjs.Array<unknown> => {
-  const options = { atomicKeys, disableYText, yTextKeys };
+  const options = { atomicKeys, disableYText, yTextKeys, jsonElementKeys };
+  const isJsonElements = key !== undefined && jsonElementKeys.includes(key);
   const yarray = new yjs.Array<unknown>();
   const mappedArray: unknown[] = [];
 
   for (const value of toYArrayElements(array)) {
     if (typeof value === "string") {
       mappedArray.push(options.disableYText ? value : stringToYText(value));
+    } else if (isJsonElements && (Array.isArray(value) || isObject(value))) {
+      mappedArray.push(toJsonElement(value));
     } else if (Array.isArray(value)) {
       mappedArray.push(arrayToYArray(value, options));
     } else if (isObject(value)) {
@@ -118,9 +182,10 @@ export const objectToYMap = (
     atomicKeys = [],
     disableYText = false,
     yTextKeys = [],
+    jsonElementKeys = [],
   }: MappingOptions = {}
 ): yjs.Map<unknown> => {
-  const options = { atomicKeys, disableYText, yTextKeys };
+  const options = { atomicKeys, disableYText, yTextKeys, jsonElementKeys };
   const ymap = new yjs.Map<unknown>();
 
   for (const [key, value] of Object.entries(object)) {
@@ -143,7 +208,7 @@ export const objectToYMap = (
         ymap.set(key, value);
       }
     } else if (Array.isArray(value)) {
-      ymap.set(key, arrayToYArray(value, options));
+      ymap.set(key, arrayToYArray(value, { ...options, key }));
     } else if (isObject(value)) {
       ymap.set(key, objectToYMap(value, options));
     } else {

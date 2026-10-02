@@ -715,6 +715,125 @@ Before, every operation below serialized 6,073 / 24,283 / 72,843 Y types at
 store still runs a (now cheap) inbound batch for foreign-only changes; the
 scopedDiff path skips those.
 
+### 18. Immutable records stored as Y.Maps (cold start) — opt-in `jsonElementKeys`
+
+Most of the cold-start floor below comes from a representation the middleware
+chooses: every object becomes a Y.Map with one Yjs item per field. An
+append-only record such as a reading session (5 fields) costs 6 structs (a
+ContentType item plus one keyed item per field, each encoding its key), and
+each record a trim removes leaves 2 permanent structs (the deleted wrapper
+plus the merged GC run of its fields). Field-level merging buys nothing for a
+record that is never edited, but every app launch pays for those structs: the
+Yjs decode of the stored doc, the snapshot and sync bytes, and a hydration
+`toJSON` walk that calls `Y.Map#toJSON` once per record. Each inbound page
+turn pays that walk again for the changed branch's array.
+
+**Fix (opt-in):** `jsonElementKeys: ["readingSessions"]`. An array stored
+under a listed key stays a Y.Array, so appends, removals and the hinted
+sawtooth range delete (§10) still merge per element. Its object and array
+elements, however, are stored as plain JSON values: one ContentAny item each,
+and consecutive inserts merge into one struct. A changed element is replaced
+whole.
+
+Three invariants make it safe; `src/json-leaf-records.spec.ts` pins each one:
+
+- **No churn.** An element is stored exactly as `objectToYMap(...).toJSON()`
+  would read it back (`toJsonElement`):
+  - own entries only, with functions and dangerous keys skipped;
+  - undefined, NaN, ±Infinity and -0 kept;
+  - nested arrays normalized;
+  - class instances (Date, Uint8Array) turned into records of their own
+    entries.
+
+  The differ therefore sees an unchanged element as equal and never rewrites
+  it. A pending change that only touches values the doc never stores (a
+  function, a `constructor` key) compares the stored forms and writes
+  nothing. Cleaning with `JSON.parse(JSON.stringify(...))` instead drops
+  undefined fields and turns NaN into null, so such elements were rewritten
+  on every flush. In a probe that cost 53 structs and 2,264 bytes per append,
+  against 6 structs and 122 bytes for Y.Map elements.
+- **Local equals remote.** That form round-trips lib0's encoding unchanged,
+  so the local doc holds exactly what peers decode.
+- **No aliasing.** `Y.Array#toJSON` hands out the stored objects by
+  reference. Elements are therefore copied twice: on insert, and whenever doc
+  JSON enters state (hydration, key-scoped, key-path and path-scoped
+  inbound). Without the second copy, mutating store state in place changes the local doc with
+  no Yjs operation, and the next encode (a persistence compaction, a sync to
+  a new peer) forks the replicas. The copy runs inside the `sanitizeDocJson`
+  walk, where a listed array never counts as safe as is, so each element is
+  visited once (copied) instead of twice (checked, then copied). At 120
+  books the copy adds about 9 ms of hydration CPU time this way, against
+  about 18 ms as a separate pass.
+
+`bench/cold-start.ts` measures both representations. Fresh docs are written
+by the real middleware. Aged docs (700 page turns per device, 12,060
+sessions trimmed) are a replay checked against the middleware: identical
+JSON, struct counts within 4. Counters are deterministic and were identical
+across all runs. Decode and `toJSON` are medians of 10 runs, 5 interleaved
+with the parent commit on each side. Hydration is the median of the 5 runs
+of this change, with a freshly decoded doc per sample. The host was a
+4-CPU machine at load 5-9.
+
+| doc | sessions stored as | structs | tombstones | snapshot | Y.applyUpdate | map.toJSON | hydration |
+|---|---|---:|---:|---:|---:|---:|---:|
+| fresh, 120 books (72k sessions) | Y.Map (default) | 434,041 | 0 | 13.09 MB | 1,419 ms | 102.9 ms | 153.3 ms |
+| | JSON (`jsonElementKeys`) | 2,281 | 0 | 10.30 MB | 260 ms | 2.0 ms | 61.9 ms |
+| aged, 10 books (7,940 live sessions) | Y.Map (default) | 113,931 | 66,120 | 1.85 MB | 523 ms | 28.5 ms | 44.9 ms |
+| | JSON (`jsonElementKeys`) | 56,191 | 48,080 | 1.52 MB | 248 ms | 3.0 ms | 11.6 ms |
+
+Per record, an appended session costs 6 structs as a Y.Map and 1 as JSON.
+Each session a 500 → 300 trim removes leaves 2 tombstones as a Y.Map and 1
+as JSON (not ~6: Yjs merges a deleted map's field items into one GC run).
+
+Hydration CPU time is steadier than wall clock on a loaded host. A one-off
+measurement outside the bench (single-threaded GC, a forced GC before each
+sample, a fresh doc per sample) puts 120 books at:
+
+- 150 ms with Y.Map elements;
+- 45 ms with `jsonElementKeys`;
+- 36 ms for the same JSON doc without the option, whose state aliases the
+  doc. That gap is the copy's cost.
+
+In the same measurement, a steady-state page turn at 120 books also gets
+cheaper:
+
+- sender flush 1.35 → 0.84 ms CPU;
+- receiver inbound patch 0.93 → 0.51 ms CPU.
+
+**What to expect in a whole app.** The fixture above holds only the progress
+map, and a fresh doc is a best case: a bulk insert merges a whole array into
+one struct. An independent whole-app model of versicle (y-cinder's
+`benchmarks/versicle-workload.ts`: ten maps in one doc, a new client ID per
+app session) switched only the session representation. At 500 and 1,500 app
+sessions it measured:
+
+- launch decode 1.49× / 1.78× faster;
+- 30% fewer structs (321k → 223k, 963k → 669k);
+- a 12–13% smaller doc (6.63 → 5.80 MB, 19.7 → 17.2 MB);
+- `toJSON` of every map 1.7–2.2× faster.
+
+That model rarely reaches the 500-session cap, so trims contribute little
+there.
+
+Limits:
+
+- **Existing docs.** Only records written after the option is enabled are
+  compact. Elements stored as Y.Maps keep working: they are converted when
+  they change and disappear as trims remove them. To compact a whole doc,
+  migrate it with `schemaVersion` / `onObsolete`.
+- **The larger floor remains.** Each page turn overwrites `currentCfi`,
+  `percentage` and `lastRead`: three Y.Map items whose tombstones never
+  merge, identically in both representations. They account for about 48% of
+  whole-doc structs in the model above, and for 42,000 of the 48,080
+  tombstones in the aged fixture.
+- **Semantics.** Concurrent changes to one element do not merge per field.
+  Each client replaces the whole element, so both replacements survive as
+  separate elements; replicas still converge. Use the option only for records
+  that are not edited after they are written. Strings inside an element are
+  plain strings, never Y.Text. All clients should list the same keys. A
+  client without the option still converges, but rewrites any element it
+  changes as a Y.Map.
+
 ## Downstream-shaped aging scenario (one hot top-level key)
 
 `bench/versicle.ts` models the shape §9 and §10 were found in: a single
@@ -767,14 +886,16 @@ second.
 ### The remaining floor: cold-start hydration
 
 Attaching a store to an already-populated document — every app launch — is
-11.6 / 40.3 / 130.2 ms at 10 / 40 / 120 books. This one is inherent and is
-NOT a bug: the store has to materialize the whole tree, and `toJSON()` over
-the document dominates (the diff on top of it is only O(top-level branches),
-since a branch absent from the initial state is inserted whole rather than
-descended). It is reported as a column so that steady-state regressions stay
-distinguishable from this unavoidable startup cost. Reducing it would mean
-not materializing the whole tree at startup — a consumer-side decision (bind
-a narrower store, or split the domain across documents), not something the
+11.6 / 40.3 / 130.2 ms at 10 / 40 / 120 books. The store has to materialize
+the whole tree, and `toJSON()` over the document dominates (the diff on top
+of it is only O(top-level branches), since a branch absent from the initial
+state is inserted whole rather than descended). It is reported as a column so
+that steady-state regressions stay distinguishable from this startup cost.
+Most of it, and most of the Yjs decode before it, comes from storing every
+reading session as a Y.Map. For immutable records like these, the opt-in
+`jsonElementKeys` (§18) removes that part. What remains means not
+materializing the whole tree at startup — a consumer-side decision (bind a
+narrower store, or split the domain across documents), not something the
 middleware can do on its own. The floor covers only what the store
 replicates: a `syncedKeys` store does not materialize the keys it ignores
 (§17).
@@ -828,6 +949,11 @@ run-to-run.)
   primitive string is one map operation, with no text diff on the sender or
   on any receiver whatever its length (§15); replacing a `Y.Text` is a diff
   plus item churn that permanently grows the document.
+- **Use `jsonElementKeys`** for arrays of immutable records (sessions, log
+  entries, events): each record becomes one Yjs struct instead of one plus
+  one per field, which shrinks the doc and speeds up every cold start (§18).
+  Do not use it for records that are edited after they are written:
+  concurrent edits to one element do not merge.
 - **Batching is already automatic.** Multiple `set()` calls in one tick
   coalesce into one Yjs transaction; multiple inbound transactions in one
   tick coalesce into one store patch.
@@ -847,7 +973,7 @@ run-to-run.)
 
 ## Regression coverage
 
-Twelve structural test suites lock the fixes in without flaky wall-clock
+Thirteen structural test suites lock the fixes in without flaky wall-clock
 assertions:
 
 - `src/text-performance.spec.ts` — Y.Text run coalescing (item counts per
@@ -950,3 +1076,21 @@ assertions:
   showing `pickMapJson` equals `pickKeys(map.toJSON())` directly, through
   `computeInboundState`, and as the legacy outbound root read (byte-identical
   updates).
+- `src/json-leaf-records.spec.ts` — the §18 option, in both diff modes:
+  - struct counts: at most 1 per record, appended or bulk-written (n vs 4n);
+  - tombstones: at most 1 per trimmed record;
+  - the snapshot byte ratio, with pinned client IDs;
+  - `Y.Map#toJSON` call counts that do not grow with the record count, in
+    hydration and per page turn.
+
+  It also guards the invariants:
+  - no rewrite of an unchanged element, per kind of non-JSON value (exact
+    structs written and items deleted per flush, stored element identity);
+  - stored form equal to the Y.Map path's and to a peer's decoded copy;
+  - in-place mutation of hydrated or inbound state never reaching the doc,
+    including state that arrived by a key path (§12) or a shallow-key
+    re-read (§11);
+  - fast-check equivalence with Y.Map elements over append, splice, replace
+    and edit sequences;
+  - convergence with clients without the option, and of concurrent appends
+    and concurrent replacements.

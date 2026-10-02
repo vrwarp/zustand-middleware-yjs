@@ -69,6 +69,32 @@ export interface YjsOptions {
   yTextKeys?: string[];
 
   /**
+   * Keys whose arrays hold immutable records (log entries, reading
+   * sessions). The object and array ELEMENTS of an array stored under one of
+   * these keys, at any depth, are stored as plain JSON values instead of
+   * nested Y.Maps / Y.Arrays.
+   *
+   * The array itself stays a Y.Array, so appends, removals and splices still
+   * merge per element, and a changed element is replaced whole (delete +
+   * insert). A record then costs one Yjs struct instead of one plus one per
+   * field, which shrinks the doc and its sync payloads, the decode at every
+   * load, and the toJSON walk of hydration and inbound patches.
+   *
+   * Use it only for records that are not edited once written:
+   * - Concurrent changes to one element do not merge per field: each client
+   * replaces the whole element, so both replacements survive as separate
+   * elements (replicas still converge). Concurrent appends merge as usual.
+   * - Strings inside an element are plain strings (never Y.Text);
+   * atomicKeys / yTextKeys do not apply inside it.
+   * - Every client should list the same keys. Mixed clients converge, but a
+   * client without the option writes the elements it changes as Y.Maps.
+   * - Elements written as Y.Maps before the option keep working and are
+   * converted when they change; the others only go away as they are
+   * removed (migrate with schemaVersion / onObsolete to rewrite a doc).
+   */
+  jsonElementKeys?: string[];
+
+  /**
    * A callback that is called when the store is first loaded from the Yjs document.
    */
   onLoaded?: () => void;
@@ -261,6 +287,7 @@ const yjsImpl: YjsImpl = <S>(
     atomicKeys,
     disableYText,
     yTextKeys,
+    jsonElementKeys,
     onLoaded,
     onObsolete,
     schemaVersion,
@@ -467,6 +494,7 @@ const yjsImpl: YjsImpl = <S>(
         atomicKeys,
         disableYText,
         yTextKeys,
+        jsonElementKeys,
         syncedKeys: syncedKeySet,
       };
 
@@ -656,6 +684,7 @@ const yjsImpl: YjsImpl = <S>(
         {
           syncedKeys: syncedKeySet,
           suppressTopLevelDeleteKeys: declaredDefaultKeys,
+          jsonElementKeys,
         }
       );
       setInboundState(initialState, true);
@@ -824,6 +853,7 @@ const yjsImpl: YjsImpl = <S>(
           const branchState = computeInboundStateForPaths(currentState, dataMap, branchPaths, {
             keyPaths: keyPaths.filter(isUnderDeepKey),
             syncedKeys: affectedKeys,
+            jsonElementKeys,
           });
 
           // `undefined` = a named branch is missing on one side, so the
@@ -837,6 +867,7 @@ const yjsImpl: YjsImpl = <S>(
               : computeInboundState(branchState, readKeysJson(dataMap, shallowAffectedKeys), {
                 syncedKeys: shallowAffectedKeys,
                 suppressTopLevelDeleteKeys: declaredDefaultKeys,
+                jsonElementKeys,
               });
 
             if (!Object.is(nextState, currentState)) {
@@ -851,6 +882,7 @@ const yjsImpl: YjsImpl = <S>(
         patchStore(storeForPatch, readKeysJson(dataMap, affectedKeys), {
           syncedKeys: affectedKeys,
           suppressTopLevelDeleteKeys: declaredDefaultKeys,
+          jsonElementKeys,
         });
         markHydrated(); // hydration source (b): first applied inbound batch
 
@@ -866,6 +898,7 @@ const yjsImpl: YjsImpl = <S>(
         {
           syncedKeys: syncedKeySet,
           suppressTopLevelDeleteKeys: declaredDefaultKeys,
+          jsonElementKeys,
         }
       );
       markHydrated(); // hydration source (b): first applied inbound batch

@@ -35,7 +35,7 @@ import { runInboundChildKeyBench } from "./inbound-child-keys";
 import { runInboundMixedBatchBench } from "./inbound-mixed-batch";
 import { formatRecordDeleteReport, runRecordDeleteBench } from "./record-delete";
 import { runStringDiffBench } from "./string-diffs";
-import { runInboundBulkBench, runSharedMapBench, runVersicleBench } from "./versicle";
+import { runColdStartRepresentationBench, runInboundBulkBench, runSharedMapBench, runVersicleBench } from "./versicle";
 import { runYArrayRunsBench } from "./yarray-runs";
 
 // Deterministic perf runs: disable the DEV-only sampled convergence check so
@@ -752,6 +752,10 @@ runRecordDeleteBench()
   .then((report) => {
     // eslint-disable-next-line no-console
     console.log(`\n${report}`);
+
+    console.error("  running cold-start representation scenario...");
+    // eslint-disable-next-line no-console
+    console.log(`\n${runColdStartRepresentationBench()}`);
   })
   .catch((error: unknown) => {
     console.error(error);
