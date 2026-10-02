@@ -229,6 +229,12 @@ reference) is invisible to the fast path; in development the middleware samples
 flushes and throws a loud "scopedDiff divergence tripwire" error if it detects
 such drift.
 
+In either mode, when a local write and a remote change land in the same tick,
+the pending local write is flushed before the remote batch is applied to the
+store, and that flush takes the same reference-checked route: it writes only
+what the local batch changed, so it cannot revert a remote change the store has
+not applied yet. In-place mutations are invisible to that flush too.
+
 ### Binding to a nested map (`scope`)
 
 `scope: { key }` binds the store to a nested `Y.Map` at

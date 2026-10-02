@@ -132,7 +132,9 @@ export interface YjsOptions {
   /**
    * Per-top-level-key scoped diffing. Default false = legacy full-tree diff
    * (`sharedType.toJSON()` of the entire map on every outbound flush;
-   * `map.toJSON()` of the whole tree on every inbound batch).
+   * `map.toJSON()` of the whole tree on every inbound batch). In both modes a
+   * flush that runs while a remote change is still unapplied to state takes
+   * the scoped route, so it cannot revert that change.
    *
    * When true:
    * - Outbound: only top-level keys whose value changed by `Object.is` between
@@ -354,6 +356,11 @@ const yjsImpl: YjsImpl = <S>(
     // "user's view" baseline is needed for the three-way merge guard.
     let batchPreviousState: S | undefined;
 
+    // Inbound counterpart (processBatch, below): at most one inbound sync per
+    // tick, and true while a foreign transaction is in the doc but not yet
+    // applied to state.
+    let isUpdatePending = false;
+
     const originalSetState = api.setState;
 
     const flushOutbound = () => {
@@ -369,7 +376,16 @@ const yjsImpl: YjsImpl = <S>(
         syncedKeys: syncedKeySet,
       };
 
-      if (scopedDiff && previousState !== undefined) {
+      /*
+       * A foreign transaction whose inbound batch has not run yet is already
+       * in the doc but not in state, so a doc-vs-state diff would write the
+       * stale local values back over it. Write only what changed since the
+       * batch-start previousState instead (the scoped diff is that three-way
+       * merge), whatever the diff mode.
+       */
+      const hasUnappliedInbound = isUpdatePending;
+
+      if ((scopedDiff || hasUnappliedInbound) && previousState !== undefined) {
         // Scoped path: diff only the Object.is-changed top-level keys, each
         // against its own subtree.
         const state = api.getState();
@@ -379,8 +395,13 @@ const yjsImpl: YjsImpl = <S>(
         }, api);
 
         // Divergence tripwire: occasionally verify the scoped flush against a
-        // full diff and fail loudly on drift (mutate-in-place writes).
-        if (isDevEnvironment() && Math.random() < __scopedDiffDevSampling.rate) {
+        // full diff and fail loudly on drift (mutate-in-place writes). A doc
+        // still ahead of state by an unapplied inbound batch is not drift.
+        if (
+          isDevEnvironment() &&
+          !hasUnappliedInbound &&
+          Math.random() < __scopedDiffDevSampling.rate
+        ) {
           const dataMap = getDataMap();
 
           if (dataMap !== undefined) {
@@ -547,9 +568,6 @@ const yjsImpl: YjsImpl = <S>(
      * main-thread blocking during bulk remote updates.
      */
 
-    // Flag to prevent scheduling more than one sync per event-loop tick.
-    let isUpdatePending = false;
-
     // Under scopedDiff: the top-level keys named by the foreign Yjs events of
     // the current inbound batch, plus a full-patch escape hatch for "the
     // scoped child map itself was (re)placed" events.
@@ -568,6 +586,16 @@ const yjsImpl: YjsImpl = <S>(
     let hasShallowInboundEvent = false;
 
     const processBatch = () => {
+      /*
+       * Flush a pending local write into the doc first, while this batch
+       * still counts as unapplied (so the flush writes only the local
+       * change): patching state from the doc below would otherwise roll the
+       * write back, and the later flush would find nothing to send.
+       */
+      if (isOutboundPending) {
+        flushOutbound();
+      }
+
       isUpdatePending = false;
 
       /*
