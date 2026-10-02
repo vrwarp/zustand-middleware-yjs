@@ -58,8 +58,9 @@ interface Source {
 
 /**
  * Sender: the middleware writes the initial array (so the layout is exactly
- * the middleware's); tombstones are elements deleted evenly through the
- * array; each edit is one transaction rewriting two fields of one element.
+ * the middleware's; the new doc is marked hydrated, so the first flush
+ * backfills it); tombstones are elements deleted evenly through the array;
+ * each edit is one transaction rewriting two fields of one element.
  */
 const buildSource = (live: number, tombstones: number, scope?: { key: string }): Source => {
   const doc = new yjs.Doc();
@@ -78,6 +79,7 @@ const buildSource = (live: number, tombstones: number, scope?: { key: string }):
     )
   );
 
+  getYjsStoreHandle(store).markHydrated();
   store.setState({ "revision": 1 });
   getYjsStoreHandle(store).flush();
 

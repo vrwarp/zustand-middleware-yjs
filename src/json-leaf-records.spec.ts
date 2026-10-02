@@ -696,6 +696,8 @@ describe("jsonElementKeys element invariants", () => {
         const store = makeListStore(doc, Array.from({ "length": 20 }, (unusedElement, index) => makeRecord(index)), isScopedDiff, isJsonLeaves);
         const handle = getYjsStoreHandle(store);
 
+        // A new doc: once hydrated, the first flush writes the initial list.
+        handle.markHydrated();
         store.setState({ "n": 1 });
         handle.flush();
 

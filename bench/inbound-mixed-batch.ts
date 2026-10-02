@@ -153,7 +153,9 @@ const makePair = (books: number): Pair => {
   );
   const senderHandle = getYjsStoreHandle(sender);
 
-  // Seed the doc (an empty doc is only written on the first flush).
+  // Seed the doc (an empty doc is only written on the first flush, and only
+  // in full once the store is hydrated: a new doc, so mark it).
+  senderHandle.markHydrated();
   sender.setState((state) => ({ "progress": { ...state.progress } }));
   senderHandle.flush();
 

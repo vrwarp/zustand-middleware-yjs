@@ -79,7 +79,9 @@ const makeReceiver = (books: number, { hydration = "replace", scopeKey }: Receiv
   const seedDoc = new yjs.Doc();
   const seeder = createStore<MixedState>()(yjsMiddleware(seedDoc, "root", () => makeInitial(books), options));
 
-  // An empty doc is only written on the first flush.
+  // An empty doc is only written on the first flush, and only in full once
+  // the store is hydrated (a new doc, so mark it).
+  getYjsStoreHandle(seeder).markHydrated();
   seeder.setState((state) => { return { "progress": { ...state.progress } } });
   getYjsStoreHandle(seeder).flush();
 

@@ -111,7 +111,8 @@ const buildSource = ({ live, tombstones, edits, scope }: SourceShape): Source =>
     )
   );
 
-  // First flush writes the whole state.
+  // First flush writes the whole state (a new doc: hydrated, so it backfills).
+  getYjsStoreHandle(store).markHydrated();
   store.setState({ "revision": 1 });
   getYjsStoreHandle(store).flush();
 

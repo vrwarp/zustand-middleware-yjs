@@ -21,6 +21,11 @@ import yjs, { __scopedDiffDevSampling, getYjsStoreHandle } from ".";
  * keep doc-absent defaults): that peer only keeps `theme` if the writer put
  * it in the doc. Every case also asserts writer/reader convergence — the
  * deeper failure is permanent divergence between peers.
+ *
+ * The writer starts on a NEW doc, so it is marked hydrated first, as its
+ * provider does once the doc is synced and this store's map is empty. A
+ * writer that has not hydrated may be writing into a doc that has not loaded
+ * yet and must not backfill (scoped-diff-prehydration-backfill.spec.ts).
  */
 
 interface Settings {
@@ -96,6 +101,7 @@ describe("scopedDiff + default 'replace' hydration keeps untouched defaults", ()
       yjs(doc, "prefs", creator, { ...OPTS, scopedDiff: true }),
     );
 
+    getYjsStoreHandle(store).markHydrated(); // new doc, synced and empty
     store.getState().setFont(20);
     getYjsStoreHandle(store).flush();
 
@@ -117,6 +123,7 @@ describe("scopedDiff + default 'replace' hydration keeps untouched defaults", ()
     );
     const storeB = createStore<Settings>(yjs(docB, "prefs", creator, OPTS));
 
+    getYjsStoreHandle(storeA).markHydrated(); // new doc, synced and empty
     storeA.getState().setFont(20);
     getYjsStoreHandle(storeA).flush();
 
@@ -160,6 +167,7 @@ describe("scopedDiff + default 'replace' hydration keeps untouched defaults", ()
     const doc = new Y.Doc();
     const store = createStore<Settings>(yjs(doc, "prefs", creator, opts));
 
+    getYjsStoreHandle(store).markHydrated(); // new doc, synced and empty
     store.getState().setFont(20);
     getYjsStoreHandle(store).flush();
 
@@ -179,6 +187,7 @@ describe("scopedDiff + default 'replace' hydration keeps untouched defaults", ()
     const doc = new Y.Doc();
     const store = createStore<Settings>(yjs(doc, "prefs", creator, opts));
 
+    getYjsStoreHandle(store).markHydrated(); // new doc, synced and empty
     store.getState().setFont(20);
     getYjsStoreHandle(store).flush();
 
@@ -200,6 +209,7 @@ describe("scopedDiff + default 'replace' hydration keeps untouched defaults", ()
     const storeA = createStore<Settings>(yjs(docA, "prefs", creator, opts));
     const storeB = createStore<Settings>(yjs(docB, "prefs", creator, opts));
 
+    getYjsStoreHandle(storeA).markHydrated(); // new doc, synced and empty
     storeA.getState().setFont(20);
     getYjsStoreHandle(storeA).flush();
 

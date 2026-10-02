@@ -110,8 +110,10 @@ const makeSyncedStore = (mode: Mode, initial: AnyState, options: MakeStoreOption
   );
   const handle = getYjsStoreHandle(store);
 
-  // An empty doc is seeded on the first write; make it (and flush, since
-  // outbound is microtask-batched) so measured flushes are steady-state.
+  // An empty doc is seeded on the first write once the store is hydrated
+  // (a new doc, so mark it); make it (and flush, since outbound is
+  // microtask-batched) so measured flushes are steady-state.
+  handle.markHydrated();
   store.setState({ "tick": 1 });
   handle.flush();
 

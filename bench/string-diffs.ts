@@ -108,7 +108,9 @@ const makeStore = (initial: AnyState, options: StoreOptions): StoreFixture => {
   );
   const handle = getYjsStoreHandle(store);
 
-  // An empty doc is seeded on the first write; flush it so timed runs are steady state.
+  // An empty doc is seeded on the first write once hydrated (a new doc, so
+  // mark it); flush it so timed runs are steady state.
+  handle.markHydrated();
   store.setState({ "tick": 1 });
   handle.flush();
 

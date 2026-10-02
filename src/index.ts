@@ -176,9 +176,12 @@ export interface YjsOptions {
    * immutable-update convention; mutate-in-place writes are invisible to the
    * fast path — guarded by the DEV sampling tripwire (loud failure) and the
    * contract suite's fast-check equivalence property. Under the default
-   * `'replace'` hydration, top-level keys the map lacks are also written (so
-   * the first flush writes every key, as the full diff does, and untouched
-   * defaults survive a reload); under `'merge-defaults'` they stay lazy.
+   * `'replace'` hydration, once the store has hydrated (from the doc, or via
+   * `markHydrated()` for a synced but empty doc) top-level keys the map lacks
+   * are also written, as the full diff does, so untouched defaults survive a
+   * reload. A flush before that writes only what changed, so it cannot
+   * clobber a doc that has not loaded yet; hydrating then writes the missing
+   * keys. Under `'merge-defaults'` they stay lazy.
    * - Inbound: only the top-level keys named by the batch's Yjs events are
    * re-read and patched; untouched keys keep their object identity.
    */
@@ -416,18 +419,13 @@ const yjsImpl: YjsImpl = <S>(
      * awaiting caller observes hydrated state.
      */
     let isHydrated = false;
+    // A scoped flush before hydration withholds the absent-key backfill (see
+    // flushOutbound); markHydrated, below, schedules the flush that runs it.
+    let isBackfillDeferred = false;
     let resolveHydrated!: () => void;
     const hydratedPromise = new Promise<void>((resolve) => {
       resolveHydrated = resolve;
     });
-    const markHydrated = (): void => {
-      if (isHydrated) {
-        return;
-      }
-
-      isHydrated = true;
-      resolveHydrated();
-    };
 
     /*
      * Outbound Microtask Batching: multiple Zustand set() / setState() calls
@@ -520,13 +518,22 @@ const yjsImpl: YjsImpl = <S>(
         // the full diff does; merge-defaults retains it and backfills lazily.
         // Not while an inbound batch is unapplied: a key the doc lacks may
         // then be a remote delete state has not seen yet, and the next flush
-        // backfills any key that is still absent.
+        // backfills any key that is still absent. Nor before hydration: a
+        // doc that has not loaded yet lacks every key, and a default written
+        // into it is a concurrent write that can beat the persisted value
+        // when the doc loads, so hydrating runs the backfill instead.
+        const isReplaceHydration = hydration !== "merge-defaults";
+
+        if (scopedDiff && isReplaceHydration && !isHydrated) {
+          isBackfillDeferred = true;
+        }
+
         doc.transact((transaction) => {
           const dataMap = ensureDataMap();
 
           patchSharedTypeScoped(dataMap, state, previousState, {
             ...sharedOptions,
-            backfillAbsentKeys: hydration !== "merge-defaults" && !hasUnappliedInbound,
+            backfillAbsentKeys: isReplaceHydration && isHydrated && !hasUnappliedInbound,
             unappliedInboundTargets: hasUnappliedInbound ? unappliedInboundTargets : undefined,
           });
           recordOwnFlush(transaction, dataMap, state);
@@ -585,6 +592,24 @@ const yjsImpl: YjsImpl = <S>(
             flushOutbound();
           }
         });
+      }
+    };
+
+    /**
+     * Flips the hydration state (see `isHydrated` above) and runs the
+     * absent-key backfill that a flush before hydration withheld.
+     */
+    const markHydrated = (): void => {
+      if (isHydrated) {
+        return;
+      }
+
+      isHydrated = true;
+      resolveHydrated();
+
+      if (isBackfillDeferred) {
+        isBackfillDeferred = false;
+        scheduleOutbound(api.getState());
       }
     };
 

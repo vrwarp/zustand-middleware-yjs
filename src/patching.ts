@@ -54,7 +54,9 @@ export interface ScopedPatchOptions extends PatchOptions {
    * value is unchanged since the batch start. Required under `'replace'`
    * hydration, where every full inbound patch (a reload, a peer) deletes a
    * doc-absent key; left off under merge-defaults, whose retained defaults
-   * backfill lazily.
+   * backfill lazily. Only safe once the doc has loaded: written into a doc
+   * that has not, each default is a write concurrent with the persisted
+   * value, and it can win the merge.
    */
   backfillAbsentKeys?: boolean;
 

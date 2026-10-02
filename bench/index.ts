@@ -437,7 +437,9 @@ const makeStoreFixture = (isScopedDiff: boolean) => {
     })
   );
 
-  // Populate the doc (first flush = full tree) so timed runs measure steady state.
+  // Populate the doc (first flush = full tree once hydrated: a new doc, so
+  // mark it) so timed runs measure steady state.
+  getYjsStoreHandle(store).markHydrated();
   store.setState({ "warm": true });
   getYjsStoreHandle(store).flush();
 

@@ -231,6 +231,15 @@ reference) is invisible to the fast path; in development the middleware samples
 flushes and throws a loud "scopedDiff divergence tripwire" error if it detects
 such drift.
 
+Under the default `"replace"` hydration, a scoped flush also writes the
+top-level keys the document lacks (defaults nobody has set yet), as the full
+diff does, so that a reload or a peer does not delete them. It does so only
+once the store has hydrated: before that the document may simply not have
+loaded yet, and a default written into it would compete with the persisted
+value when it loads (and could win). An earlier flush writes only what changed,
+and hydrating writes the rest. For a new document, call `markHydrated()` once it
+is synced (see below), or untouched defaults are not written.
+
 In either mode, when a local write and a remote change land in the same tick,
 the pending local write is flushed before the remote batch is applied to the
 store, and that flush takes the same reference-checked route: it writes only
