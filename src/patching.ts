@@ -36,6 +36,20 @@ export interface PatchOptions extends MappingOptions {
 }
 
 /**
+ * Options for patchSharedTypeScoped.
+ */
+export interface ScopedPatchOptions extends PatchOptions {
+  /**
+   * Also write top-level state keys the map does not have, even when their
+   * value is unchanged since the batch start. Required under `'replace'`
+   * hydration, where every full inbound patch (a reload, a peer) deletes a
+   * doc-absent key; left off under merge-defaults, whose retained defaults
+   * backfill lazily.
+   */
+  backfillAbsentKeys?: boolean;
+}
+
+/**
  * Internal options for applyChangesToSharedType: additionally carries the
  * JSON snapshot the change list was computed against, so Y.Map pending
  * recursion can thread each child's snapshot down instead of re-serializing.
@@ -585,6 +599,10 @@ export const patchSharedType = (
  * `previousState` DELETE guard and the Y.Text↔string mismatch repair behave
  * exactly as in the legacy full diff.
  *
+ * With `backfillAbsentKeys`, an unchanged top-level key the map does not
+ * have yet (a never-set declared default) is written whole, as the legacy
+ * full diff would; without it such keys stay lazy until first set.
+ *
  * @param sharedType - The top-level Y.Map the store is bound to.
  * @param newState - The post-batch state.
  * @param previousState - The pre-batch state (batch-start capture).
@@ -599,7 +617,8 @@ export const patchSharedTypeScoped = (
     disableYText,
     yTextKeys,
     syncedKeys,
-  }: PatchOptions = {}
+    backfillAbsentKeys,
+  }: ScopedPatchOptions = {}
 ): void => {
   const prevRecord: Record<string, unknown> = isPlainRecord(previousState) ? previousState : {};
   const newRecord: Record<string, unknown> = isPlainRecord(newState) ? newState : {};
@@ -623,9 +642,12 @@ export const patchSharedTypeScoped = (
     }
 
     const hasPresenceChanged = Object.hasOwn(newRecord, key) !== Object.hasOwn(prevRecord, key);
+    const isAbsentFromMap = backfillAbsentKeys === true
+      && Object.hasOwn(newRecord, key)
+      && !sharedType.has(key);
 
     // The Object.is fast path: untouched keys are skipped entirely.
-    if (!hasPresenceChanged && Object.is(prevValue, nextValue)) {
+    if (!hasPresenceChanged && !isAbsentFromMap && Object.is(prevValue, nextValue)) {
       continue;
     }
 

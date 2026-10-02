@@ -145,8 +145,10 @@ export interface YjsOptions {
    * against its own subtree only. Sound for stores following zustand's
    * immutable-update convention; mutate-in-place writes are invisible to the
    * fast path — guarded by the DEV sampling tripwire (loud failure) and the
-   * contract suite's fast-check equivalence property. First-ever flush (no
-   * previousState) falls back to the full legacy diff.
+   * contract suite's fast-check equivalence property. Under the default
+   * `'replace'` hydration, top-level keys the map lacks are also written (so
+   * the first flush writes every key, as the full diff does, and untouched
+   * defaults survive a reload); under `'merge-defaults'` they stay lazy.
    * - Inbound: only the top-level keys named by the batch's Yjs events are
    * re-read and patched; untouched keys keep their object identity.
    */
@@ -437,8 +439,14 @@ const yjsImpl: YjsImpl = <S>(
         // against its own subtree.
         const state = api.getState();
 
+        // Under 'replace' a never-set default the doc lacks would be deleted
+        // by every full inbound patch (reloads, peers), so write it now as
+        // the full diff does; merge-defaults retains it and backfills lazily.
         doc.transact(() => {
-          patchSharedTypeScoped(ensureDataMap(), state, previousState, sharedOptions);
+          patchSharedTypeScoped(ensureDataMap(), state, previousState, {
+            ...sharedOptions,
+            backfillAbsentKeys: hydration !== "merge-defaults",
+          });
         }, api);
 
         // Divergence tripwire: occasionally verify the scoped flush against a
