@@ -23,6 +23,15 @@ const isLowSurrogate = (code: number): boolean => code >= 0xDC_00 && code <= 0xD
 // eslint-disable-next-line @typescript-eslint/no-misused-spread -- code points, not graphemes: only a split surrogate pair corrupts a Y.Text
 const toCodePoints = (text: string): string[] => [...text];
 
+/**
+ * SameValueZero: strict equality, except that NaN equals NaN. A NaN in state
+ * round-trips through the doc as NaN, so with plain `!==` an unchanged NaN
+ * would be re-written on every flush (clobbering concurrent remote edits) and
+ * re-patched on every inbound batch. Unlike Object.is, 0 and -0 stay equal.
+ */
+const isSameValueZero = (a: unknown, b: unknown): boolean =>
+  { return a === b || (Number.isNaN(a) && Number.isNaN(b)) };
+
 const hasCommonSubsequence = (a: string, b: string): boolean => {
   const alphabetOfB = new Set(b);
 
@@ -255,7 +264,7 @@ const isEveryElementEqualForDiff = (a: unknown[], b: unknown[]): boolean => {
   return a.every((left, index) => {
     const right = b[index];
 
-    if (Object.is(left, right)) {
+    if (isSameValueZero(left, right)) {
       return right !== undefined && typeof right !== "function";
     }
 
@@ -271,10 +280,11 @@ const isEveryElementEqualForDiff = (a: unknown[], b: unknown[]): boolean => {
  * building change lists. Mirrors getChanges' quirks on purpose: a
  * function-valued key missing from `b` does not count as a difference,
  * `b`'s array elements compare in their stored form (toYArrayElements), and
- * non-diffable values compare by `Object.is` (so an unchanged NaN is equal).
+ * non-diffable values compare by isSameValueZero (so an unchanged NaN is
+ * equal, and 0 equals -0).
  */
 export const isDeepEqualForDiff = (a: unknown, b: unknown): boolean => {
-  if (Object.is(a, b)) {
+  if (isSameValueZero(a, b)) {
     return true;
   }
 
@@ -284,7 +294,7 @@ export const isDeepEqualForDiff = (a: unknown, b: unknown): boolean => {
 
   /*
    * Hot path: this runs for every element of every diffed array and every key
-   * of every diffed record, so the per-field cost matters. `Object.is` is
+   * of every diffed record, so the per-field cost matters. isSameValueZero is
    * checked before any type classification (most fields are primitives), and
    * Object.keys/every are used instead of Object.entries/for-of to avoid
    * per-field tuple and iterator allocations.
@@ -321,7 +331,7 @@ export const isDeepEqualForDiff = (a: unknown, b: unknown): boolean => {
       const other = a[property];
       const value = b[property];
 
-      if (Object.is(other, value)) {
+      if (isSameValueZero(other, value)) {
         return true;
       }
 
@@ -352,7 +362,7 @@ const getMatchingRunLength = (
     const right = b[bStart + length];
 
     if (
-      !Object.is(left, right) &&
+      !isSameValueZero(left, right) &&
       !(isDiffable(left) && isDiffable(right) && isSameType(left, right) && isDeepEqualForDiff(left, right))
     ) {
       break;
@@ -475,7 +485,7 @@ const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOpt
     for (let k = 0; k <= LOOKAHEAD_WINDOW; k = k + 1) {
       if (bIndex + k < b.length) {
         const bValue = b[bIndex + k];
-        const isStrictMatch = Object.is(value, bValue);
+        const isStrictMatch = isSameValueZero(value, bValue);
         const isDeepMatch =
           !isStrictMatch &&
           isDiffable(value) &&
@@ -505,7 +515,7 @@ const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOpt
 
       if (k > 0 && index + k < a.length) {
         const nextA = a[index + k];
-        const isStrictMatch = Object.is(nextA, b[bIndex]);
+        const isStrictMatch = isSameValueZero(nextA, b[bIndex]);
         const isDeepMatch =
           !isStrictMatch &&
           isDiffable(nextA) &&
@@ -700,7 +710,7 @@ const getRecordChanges = (a: Record<string, unknown>, b: Record<string, unknown>
       if (!isDeepEqualForDiff(a[property], value)) {
         changeList.push([changeType.pending, property, getChanges(a[property], value)]);
       }
-    } else if (!Object.is(a[property], value)) {
+    } else if (!isSameValueZero(a[property], value)) {
       changeList.push([changeType.update, property, value]);
     }
   }
