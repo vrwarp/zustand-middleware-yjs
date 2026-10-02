@@ -431,6 +431,9 @@ const yjsImpl: YjsImpl = <S>(
       if (!isOutboundPending) {
         isOutboundPending = true;
         // Record the pre-mutation state only for the FIRST set() of this batch.
+        // Callers schedule BEFORE applying their write: zustand notifies
+        // listeners synchronously inside set, so a set() made from a
+        // subscriber must not claim the batch with a post-write baseline.
         batchPreviousState = capturedPreviousState;
         // The guard makes api.yjs.flush() (synchronous drain) safe: a manual
         // flush clears the flag and the stale microtask becomes a no-op.
@@ -453,11 +456,9 @@ const yjsImpl: YjsImpl = <S>(
        * optimistic UI / React responsiveness) then schedules a Yjs sync.
        */
       (partial, replace) => {
-        const previousState = get();
-
+        scheduleOutbound(get());
         // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any
         set(partial as any, replace as any);
-        scheduleOutbound(previousState);
       },
       get,
       api
@@ -523,11 +524,9 @@ const yjsImpl: YjsImpl = <S>(
     }
 
     api.setState = (partial, replace) => {
-      const previousState = api.getState();
-
+      scheduleOutbound(api.getState());
       // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any
       originalSetState(partial as any, replace as any);
-      scheduleOutbound(previousState);
     };
 
     /*
