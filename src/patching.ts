@@ -1217,16 +1217,37 @@ const isArrayStructureUnchanged = (
 };
 
 /**
- * Drops function-valued keys (store actions) from a state record, and the
- * same keys from the doc JSON beside it, at every depth. An action is never
- * replicated and inbound patches never replace one with replicated data, so
- * whatever the doc holds at an action's key is by design, not drift.
+ * Drops function-valued keys (store actions) and prototype-named keys from a
+ * state record, and the same keys from the doc JSON beside it, at every
+ * depth — array elements included. An action is never replicated and
+ * inbound patches never replace one with replicated data, so whatever the
+ * doc holds at an action's key is by design, not drift.
  *
  * @param docValue - The doc's JSON at this level.
  * @param stateValue - The state at the same level.
  * @returns Both values with action keys removed.
  */
 const withoutActionKeys = (docValue: unknown, stateValue: unknown): [unknown, unknown] => {
+  if (Array.isArray(stateValue)) {
+    // Pair doc elements with the state's stored form (function elements
+    // dropped), as the full diff aligns them. Unpaired elements on either
+    // side are a length difference the diff reports regardless.
+    const elements = toYArrayElements(stateValue);
+
+    if (!Array.isArray(docValue)) {
+      return [docValue, elements];
+    }
+
+    const docArray: unknown[] = [...docValue];
+    const stateArray: unknown[] = [...elements];
+    const pairedLength = Math.min(docValue.length, elements.length);
+
+    for (let index = 0; index < pairedLength; index = index + 1) {
+      [docArray[index], stateArray[index]] = withoutActionKeys(docValue[index], elements[index]);
+    }
+
+    return [docArray, stateArray];
+  }
   if (!isPlainRecord(stateValue)) {
     return [docValue, stateValue];
   }
