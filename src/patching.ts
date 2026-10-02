@@ -3,7 +3,7 @@ import * as yjs from "yjs";
 import type { StoreApi } from "zustand/vanilla";
 import { getChanges } from "./diff";
 import { arrayToYArray, type MappingOptions, objectToYMap, stringToYText, toYArrayElements } from "./mapping";
-import { type Change, changeType } from "./types";
+import { type Change, type ChangeType, changeType } from "./types";
 
 /**
  * Options for patching yjs shared types.
@@ -222,12 +222,83 @@ const coalesceTextChanges = (changes: Change[]): Change[] =>
   { return coalesceRunChanges(changes, true) };
 
 /**
- * Y.Array changes only merge same-index delete runs (contiguous block
- * removals and the trailing-block deletes the differ emits at a fixed index).
- * Inserts are NOT merged: each array insert carries its own element value.
+ * Y.Array inserts and updates applied as one run: the values the change's
+ * value slot carries are placed with a single Y.Array insert. A wrapper
+ * rather than the bare list, because an element value can itself be an array.
  */
-const coalesceArrayChanges = (changes: Change[]): Change[] =>
-  { return coalesceRunChanges(changes, false) };
+interface ArrayElementRun {
+  readonly values: unknown[];
+}
+
+/**
+ * Like the text differ, the array differ emits inserts and updates one
+ * element at a time: an append of k elements is [insert, n], [insert, n+1],
+ * ..., a rewrite is k contiguous updates. Applying each as its own
+ * `yarray.insert(i, [value])` is quadratic in Yjs for elements that integrate
+ * with a single clock (primitives, empty Y.Maps and Y.Arrays): one
+ * transaction hands them consecutive clocks, and every insert's findMarker
+ * walks left across the whole mergeable run inserted so far. So every
+ * insert/update is wrapped in a run that grows while the next change has the
+ * same type at the next index; sequential semantics are preserved exactly: k
+ * inserts at i..i+k-1 place k values at i..i+k-1 in order, and k updates
+ * there replace the same k elements (one ranged delete, one insert). Inserts
+ * at the SAME index never merge (the later one lands first), and
+ * pending/delete/none changes and function values (skipped, so they take no
+ * index) end a run, which leaves the pending previousState alignment and the
+ * delete-run clamp untouched.
+ *
+ * Under disableYText a pending string element is an update in all but name —
+ * both pending sub-branches replace it by delete(i) + insert(i, [string]) —
+ * and a string-list rewrite diffs every element as pending, so it joins
+ * update runs. `elementState` is read at the post-application index the
+ * pending branch reads; the doc is never read here.
+ */
+const coalesceArrayElementRuns = (
+  changes: Change[],
+  elementState: unknown,
+  disableYText: boolean
+): Change[] => {
+  const coalesced: Change[] = [];
+  // The open run: its change type, the index right after it, and its values.
+  let runType: ChangeType | undefined;
+  let runEnd = 0;
+  let runValues: unknown[] = [];
+
+  for (const [changeKind, property, changeValue] of changes) {
+    const isStringReplacement = disableYText &&
+      changeKind === changeType.pending &&
+      Array.isArray(elementState) &&
+      typeof elementState[property as number] === "string";
+    const type = isStringReplacement ? changeType.update : changeKind;
+    const value = isStringReplacement ? (elementState as unknown[])[property as number] : changeValue;
+
+    if ((type !== changeType.insert && type !== changeType.update) || value instanceof Function) {
+      runType = undefined;
+      coalesced.push([type, property, value]);
+    } else if (type === runType && property === runEnd) {
+      runValues.push(value);
+      runEnd = runEnd + 1;
+    } else {
+      runType = type;
+      runEnd = (property as number) + 1;
+      runValues = [value];
+
+      const run: ArrayElementRun = { "values": runValues };
+
+      coalesced.push([type, property, run]);
+    }
+  }
+
+  return coalesced;
+};
+
+/**
+ * Y.Array changes merge same-index delete runs (contiguous block removals and
+ * the trailing-block deletes the differ emits at a fixed index), then
+ * contiguous insert and update runs (see coalesceArrayElementRuns).
+ */
+const coalesceArrayChanges = (changes: Change[], elementState: unknown, disableYText: boolean): Change[] =>
+  { return coalesceArrayElementRuns(coalesceRunChanges(changes, false), elementState, disableYText) };
 
 const deleteRunLength = (value: unknown): number =>
    typeof value === "number" ? value : 1 ;
@@ -268,14 +339,14 @@ const applyChangesToSharedType = (
   const elementState = asStoredElements(newState);
   const options = { atomicKeys, disableYText, "previousState": asStoredElements(previousState), yTextKeys };
 
-  // Y.Text edits arrive as per-character changes and Y.Array shrinks as
-  // per-element same-index deletes; apply both as runs instead.
+  // Y.Text edits arrive as per-character changes and Y.Array edits as
+  // per-element changes; apply both as runs instead.
   let effectiveChanges = changes;
 
   if (sharedType instanceof yjs.Text) {
     effectiveChanges = coalesceTextChanges(changes);
   } else if (sharedType instanceof yjs.Array) {
-    effectiveChanges = coalesceArrayChanges(changes);
+    effectiveChanges = coalesceArrayChanges(changes, elementState, options.disableYText);
   }
 
   // Y.Array length before any change applies: maps pending indices back to
@@ -312,25 +383,27 @@ const applyChangesToSharedType = (
               sharedType.set(prop, value);
             }
           } else if (sharedType instanceof yjs.Array) {
+            // coalesceArrayChanges wraps every Y.Array insert/update in a run.
             const index = property as number;
+            const { values } = value as ArrayElementRun;
 
             if (type === changeType.update) {
-              sharedType.delete(index);
+              sharedType.delete(index, values.length);
             }
 
-            if (typeof value === "string") {
-              if (options.disableYText) {
-                sharedType.insert(index, [value]);
-              } else {
-                sharedType.insert(index, [stringToYText(value)]);
+            sharedType.insert(index, values.map((element) => {
+              if (typeof element === "string") {
+                return options.disableYText ? element : stringToYText(element);
               }
-            } else if (Array.isArray(value)) {
-              sharedType.insert(index, [arrayToYArray(value, options)]);
-            } else if (typeof value === "object" && value !== null) {
-              sharedType.insert(index, [objectToYMap(value as Record<string, unknown>, options)]);
-            } else {
-              sharedType.insert(index, [value]);
-            }
+              if (Array.isArray(element)) {
+                return arrayToYArray(element, options);
+              }
+              if (typeof element === "object" && element !== null) {
+                return objectToYMap(element as Record<string, unknown>, options);
+              }
+
+              return element;
+            }));
           } else if (sharedType instanceof yjs.Text) {
             sharedType.insert(property as number, value as string);
           }
@@ -501,6 +574,8 @@ const applyChangesToSharedType = (
             }
           }
         } else if (sharedType instanceof yjs.Array) {
+          // (Under disableYText a string element arrives as an update run
+          // instead; see coalesceArrayElementRuns.)
           const index = property as number;
           const existing = sharedType.get(index);
           const newValue = (elementState as unknown[])[index];

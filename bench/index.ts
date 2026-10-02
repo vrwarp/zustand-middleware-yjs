@@ -35,6 +35,7 @@ import { runInboundChildKeyBench } from "./inbound-child-keys";
 import { formatRecordDeleteReport, runRecordDeleteBench } from "./record-delete";
 import { runStringDiffBench } from "./string-diffs";
 import { runInboundBulkBench, runVersicleBench } from "./versicle";
+import { runYArrayRunsBench } from "./yarray-runs";
 
 // Deterministic perf runs: disable the DEV-only sampled convergence check so
 // scopedDiff numbers measure the flush itself, not the diagnostic.
@@ -358,6 +359,15 @@ const makeDeepState = (
     { setup: () => makeObjectDocFixture({ "list": items }), runs: 10 }
   ), { items: ARRAY_SIZE });
 }
+
+/* -------------------------------------------------------------------------
+ * 4c. Y.Array bulk primitive inserts/updates through the middleware
+ *     (insert/update runs, docs/performance.md §16; see bench/yarray-runs.ts)
+ * ---------------------------------------------------------------------- */
+
+console.error("  running Y.Array bulk-insert scenarios...");
+
+const yArrayRunsReport = runYArrayRunsBench(record);
 
 /* -------------------------------------------------------------------------
  * 5. End-to-end outbound flush: legacy full-tree diff vs scopedDiff
@@ -698,6 +708,8 @@ console.log(`
 | Yjs item count | ${String(agedObjectReport.itemCount)} |
 | final map.toJSON() (ms) | ${agedObjectReport.finalToJsonMs.toFixed(3)} |
 `);
+// eslint-disable-next-line no-console
+console.log(yArrayRunsReport);
 
 console.error("  running inbound bulk record-delete scenario...");
 runRecordDeleteBench()

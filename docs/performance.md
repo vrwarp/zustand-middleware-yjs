@@ -115,11 +115,17 @@ batching.
 | clear a 5,000-element Y.Array | **2,265 ms** | **0.95 ms** (~2,400×) |
 | remove 500 elements mid a 5,000-element Y.Array | 366 ms | 175 ms (2×) |
 
-The remaining cost in the mid-array case is a diff-quality limit, not an
-application cost: block removals larger than the differ's 10-element
-lookahead window degrade to element-wise updates (delete+insert per element).
-If your workload removes large mid-array blocks, model the list as an object
-keyed by id, or split it across top-level keys.
+The remaining cost in the mid-array case was blamed on diff quality: block
+removals larger than the differ's 10-element lookahead window degrade to
+element-wise updates (delete+insert per element). Part of it was application
+cost after all — each of those updates was its own Yjs call pair, quadratic
+for primitive elements — and §16 now applies them as one ranged delete plus
+one insert per contiguous run; §10's identity scan finds the block outright
+when the new array is built from the old one (this scenario is a single range
+delete today). A rebuilt array still rewrites every shifted element as a new
+item, so if your workload removes large mid-array blocks from lists it
+rebuilds, model the list as an object keyed by id, or split it across
+top-level keys.
 
 ### 5. Repeated subtree serialization in nested recursion
 
@@ -588,6 +594,53 @@ strings with small edits (versicle's CFIs and titles) the per-flush saving is
 microseconds; the value is removing the out-of-memory tail when a long string
 is replaced, plus ~1.9× on keystrokes in very large `Y.Text` notes.
 
+### 16. Y.Array bulk primitive inserts and rewrites (quadratic inside Yjs)
+
+The array differ emits one change per element — an append of k elements is k
+inserts at n, n+1, ..., a rewrite is k contiguous updates (or k `pending`
+string diffs) — and the Y.Array applier issued one `yarray.insert(i, [value])`
+(plus a `delete(i)` for updates) per change. For elements that integrate with
+a single clock — numbers, booleans, null, strings under `disableYText`, empty
+objects and arrays — that is quadratic inside Yjs: one transaction hands them
+consecutive clocks from the same client, and on every insert Yjs's
+`findMarker` walks left across the whole mergeable run inserted so far, so k
+inserts step over ~k²/2 items. Objects with fields break the clock run (their
+field items take clocks in between), which is why the object-array benches
+never showed it, and the first flush (`arrayToYArray`, one insert of
+everything) was never affected. Mid-array and head block inserts were already
+linear; appends and element-wise rewrites — an import or restore, bulk-adding
+ids to a shelf, rebuilding a list of ids or CFI ranges — were not.
+
+**Fix:** `coalesceArrayElementRuns` in `src/patching.ts` merges insert (or
+update) changes at strictly contiguous ascending indices into one run,
+applied as a single `insert(i, values)` (after one `delete(i, k)` for
+updates). Under `disableYText` a `pending` change on a string element joins
+update runs: both of its branches already replaced the element by delete +
+insert, and a string-list rewrite diffs every element as pending. Runs stop at
+any other change and at function values, so the pending `previousState`
+alignment and the delete-run clamp are unchanged, and values are mapped
+exactly as before. Yjs merged the per-element items when the transaction
+ended anyway, so the document is byte-identical — items, clocks, origins and
+update bytes do not change, only the CPU spent inside Yjs.
+
+Measured with `bench/yarray-runs.ts` (through the middleware with
+`disableYText` + `scopedDiff`, Node 22, Yjs 13.5.52; medians of five
+interleaved before/after runs; "item visits" counts reads of `Item#deleted`,
+i.e. the items Yjs's list walks step over):
+
+| scenario | before | after | item visits |
+|---|---:|---:|---:|
+| append 2,000 ids to a 1,000-id list | 514 ms | 1.3 ms | 6.0M → 17 |
+| append 4,000 numbers | **2,167 ms** | **1.0 ms** (~2,000×) | 24.0M → 17 |
+| rewrite all 4,000 numbers (update path) | 480 ms | 1.1 ms | 8.1M → 22 |
+| rewrite all 4,000 ids (pending-string path) | 902 ms | 9.2 ms | 16.1M → 22 |
+| append 4,000 objects with fields (control) | 141 ms | 28 ms | 334k → 44k |
+
+Before the fix, item visits grew 4.0× per doubling of the run (1k → 2k → 4k
+elements); now they are flat. Below ~200 elements per flush the old cost was a
+few milliseconds, so everyday edits were never affected — this was a cliff
+for bulk operations on primitive lists.
+
 ## Downstream-shaped aging scenario (one hot top-level key)
 
 `bench/versicle.ts` models the shape §9 and §10 were found in: a single
@@ -707,9 +760,10 @@ run-to-run.)
   *provided the surviving elements keep their identity* — i.e. the new array
   is built from the old one (`slice`, `filter`, `concat`, spread) rather than
   rebuilt from scratch. A rebuilt array shares no references, so a large
-  splice in it still degrades to element-wise updates; prefer id-keyed
-  objects for collections with heavy mid-list churn that cannot preserve
-  identity.
+  splice in it still degrades to element-wise updates (applied as one ranged
+  rewrite since §16, but every rewritten element becomes a new item); prefer
+  id-keyed objects for collections with heavy mid-list churn that cannot
+  preserve identity.
 - **Long-lived documents:** Yjs garbage-collects tombstone *content* but not
   item metadata. If a document has accumulated years of history you no longer
   need, snapshot the state into a fresh doc (a schema-version bump via
@@ -717,7 +771,7 @@ run-to-run.)
 
 ## Regression coverage
 
-Eight structural test suites lock the fixes in without flaky wall-clock
+Nine structural test suites lock the fixes in without flaky wall-clock
 assertions:
 
 - `src/text-performance.spec.ts` — Y.Text run coalescing (item counts per
@@ -787,3 +841,10 @@ assertions:
   pairs are described (array alignment and every other change identical to
   the default output), and that the deferral sentinel cannot be applied as
   an empty change list.
+- `src/yarray-insert-runs.spec.ts` — the §16 fix: Y.Array insert/delete call
+  counts for bulk primitive appends and rewrites (update and pending-string
+  paths, legacy and `scopedDiff`), an `Item#deleted` read count proving the
+  Yjs list-walk work of an append grows linearly, and a fast-check property
+  that patches random write sequences (with concurrent remote edits) into two
+  docs — one through the library, one through an element-wise reference
+  applier — and requires byte-identical encoded state after every patch.
