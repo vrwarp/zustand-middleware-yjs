@@ -12,7 +12,7 @@ import * as fc from "fast-check";
 import * as yjs from "yjs";
 import { createStore } from "zustand/vanilla";
 import yjsMiddleware, { getYjsStoreHandle } from ".";
-import { computeInboundStateForPaths, minimizeInboundPaths } from "./patching";
+import { computeInboundStateForPaths, minimizeInboundPaths, truncateAtArrayIndex } from "./patching";
 
 interface Device { cfi: string; pct: number; tags: string[] }
 type Tree = Record<string, Record<string, Device>>;
@@ -409,5 +409,16 @@ describe("minimizeInboundPaths", () => {
 
   it("keeps numeric and string segments distinct only when they differ", () => {
     expect(minimizeInboundPaths([["a", 0, "x"], ["a", 0]])).toStrictEqual([["a", 0]]);
+  });
+});
+
+describe("truncateAtArrayIndex", () => {
+  it("cuts at the first numeric (array index) segment", () => {
+    expect(truncateAtArrayIndex(["a", "b", 2, "x", 0])).toStrictEqual(["a", "b"]);
+    expect(truncateAtArrayIndex(["a", 0, "x"])).toStrictEqual(["a"]);
+  });
+
+  it("keeps a path of map keys whole, numeric-looking keys included", () => {
+    expect(truncateAtArrayIndex(["a", "1", "x"])).toStrictEqual(["a", "1", "x"]);
   });
 });

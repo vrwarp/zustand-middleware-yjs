@@ -12,6 +12,7 @@ import {
   patchSharedType,
   patchSharedTypeScoped,
   patchStore,
+  truncateAtArrayIndex,
 } from "./patching";
 
 /**
@@ -758,15 +759,19 @@ const yjsImpl: YjsImpl = <S>(
          * two or more store-relative segments identifies a branch the
          * path-scoped patch can reconcile on its own; anything shallower
          * (a top-level key added, replaced or deleted) still needs the
-         * key-scoped route, which reconciles that whole key.
+         * key-scoped route, which reconciles that whole key. Paths are cut
+         * at their first array index, which may be miscounted or stale by
+         * the time the batch runs (see truncateAtArrayIndex).
          */
         for (const event of events) {
           if (scopeKey === undefined) {
             if (event.path.length > 0) {
               keys.add(String(event.path[0]));
 
-              if (event.path.length >= 2) {
-                paths.push([...event.path]);
+              const path = truncateAtArrayIndex(event.path);
+
+              if (path.length >= 2) {
+                paths.push([...path]);
               } else {
                 hasShallowInboundEvent = true;
               }
@@ -791,8 +796,10 @@ const yjsImpl: YjsImpl = <S>(
             } else {
               keys.add(String(event.path[1]));
 
-              if (event.path.length >= 3) {
-                paths.push(event.path.slice(1));
+              const path = truncateAtArrayIndex(event.path.slice(1));
+
+              if (path.length >= 2) {
+                paths.push(path);
               } else {
                 hasShallowInboundEvent = true;
               }

@@ -1162,6 +1162,26 @@ export const minimizeInboundPaths = (paths: readonly InboundPath[]): InboundPath
 };
 
 /**
+ * Cuts a Yjs event path at its first array index, so the branch it names is
+ * addressed by map keys alone.
+ *
+ * Why: numeric segments of `event.path` are not reliable element indices by
+ * the time the batched patch reads them. Yjs up to 13.6.15 counts Items
+ * rather than elements in `getPathTo` (primitives inserted together share
+ * one Item, so a container after them gets too small an index), and a local
+ * write applied or flushed before the batch runs can shift the array.
+ * Reading both sides at such an index reconciles the wrong element — or two
+ * equal wrong elements, silently dropping the change. Map keys are stable,
+ * so the prefix names the same node on both sides and its array is
+ * reconciled whole.
+ */
+export const truncateAtArrayIndex = (path: InboundPath): InboundPath => {
+  const index = path.findIndex((step) => typeof step === "number");
+
+  return index === -1 ? path : path.slice(0, index);
+};
+
+/**
  * Path-scoped inbound patch: reconciles ONLY the branches named by `paths`
  * (each at least two segments deep) instead of re-reading and re-diffing a
  * whole top-level key.
@@ -1180,9 +1200,10 @@ export const minimizeInboundPaths = (paths: readonly InboundPath[]): InboundPath
  * their object identity (better referential stability than rebuilding the
  * whole top-level value, which is what the caller did before).
  *
- * The caller must only pass paths that Yjs events named. Like the key-scoped
- * path it replaces, this reconciles what changed rather than the whole
- * subtree — one level deeper, but the same assumption.
+ * The caller must only pass paths that Yjs events named, cut at their first
+ * array index (`truncateAtArrayIndex`). Like the key-scoped path it
+ * replaces, this reconciles what changed rather than the whole subtree — one
+ * level deeper, but the same assumption.
  *
  * Returns `undefined` when a path cannot be reconciled in isolation — the
  * branch is missing on one side, so the change is only visible at a level

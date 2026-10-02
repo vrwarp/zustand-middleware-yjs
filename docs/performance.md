@@ -294,6 +294,14 @@ Safety comes from being conservative about when the fast route applies:
   mode that would not show up as a crash.
 - **`syncedKeys` still gates the first segment,** so a deep change under a
   key this store does not replicate is ignored exactly as before.
+- **Paths are cut at their first array index.** Numeric segments are not
+  reliable by the time the batch runs: Yjs up to 13.6.15 counts Items rather
+  than elements in `event.path` (primitives inserted together share one
+  Item), and a local write applied or flushed before the batch can shift the
+  array. Reading both sides at such an index patches the wrong element, or
+  finds two equal wrong elements and drops the change. Map keys are stable,
+  so the path stops at the array and the whole array is reconciled; a path
+  left under two segments takes the key-scoped route.
 
 Like the key-scoped path it replaces, this reconciles what the events named
 rather than the whole subtree — one level deeper, but the same assumption.
