@@ -733,46 +733,89 @@ const getArrayChanges = (
   return changeList;
 };
 
+/**
+ * The result of a record diff that finds nothing, shared so that unchanged
+ * subtrees allocate no change lists. Frozen: a push onto a returned list
+ * throws instead of corrupting every later empty record diff.
+ */
+const noRecordChanges = Object.freeze<Change[]>([]) as Change[];
+
 const getRecordChanges = (
   a: Record<string, unknown>,
   b: Record<string, unknown>,
   nestedStrings: NestedStringMode
 ): Change[] => {
-  const changeList: Change[] = [];
+  /*
+   * Single pass over records: each changed child is recursed into once, and
+   * its pending change is kept only if its list is non-empty. Prefiltering
+   * every child with isDeepEqualForDiff would fully walk each sibling before
+   * the first difference and then walk it again in the recursion, once per
+   * ancestor level, so a change's cost would grow with its key position and
+   * depth. Unchanged subtrees stay allocation-free instead: Object.keys
+   * rather than Object.entries (no tuples), and the change list is
+   * allocated only for the first change.
+   */
+  let changeList: Change[] | undefined;
 
   /*
    * Membership is own-property only: `in` walks the prototype chain, so a
    * removed key named like an Object.prototype member ("toString",
    * "valueOf", ...) would still look present and its delete would be lost.
    */
-  for (const [property, value] of Object.entries(a)) {
-    if (!Object.hasOwn(b, property) && !(value instanceof Function)) {
+  for (const property of Object.keys(a)) {
+    if (!Object.hasOwn(b, property) && !(a[property] instanceof Function)) {
+      changeList = changeList ?? [];
       changeList.push([changeType.delete, property, undefined]);
     }
   }
 
-  for (const [property, value] of Object.entries(b)) {
+  for (const property of Object.keys(b)) {
+    const value = b[property];
+
     if (!Object.hasOwn(a, property)) {
+      changeList = changeList ?? [];
       changeList.push([changeType.insert, property, value]);
-    } else if (isDiffable(a[property]) && isDiffable(value) && isSameType(a[property], value)) {
+      continue;
+    }
+
+    const other = a[property];
+
+    // Unchanged leaves stop here: equal strings never reach the text diff.
+    if (isSameValueZero(other, value)) {
+      continue;
+    }
+
+    if (isDiffable(other) && isDiffable(value) && isSameType(other, value)) {
       /*
-       * Equality prefilter: for unchanged subtrees (the common case in a
-       * full-tree diff), the early-exit comparison avoids building and
-       * discarding a whole tree of empty change lists. isDeepEqualForDiff
-       * matches `getChanges(x, y).length === 0` exactly, so a `false` here
-       * guarantees a non-empty change list.
+       * Arrays keep the early-exit prefilter: getChanges would make an equal
+       * array (the common case) pay a toYArrayElements scan and the
+       * lookahead setup. Re-walking a changed array's leading elements stays
+       * at this one level, as the records below recurse in a single pass.
+       * isDeepEqualForDiff matches `getChanges(x, y).length === 0` exactly.
        */
-      if (!isDeepEqualForDiff(a[property], value)) {
-        changeList.push(typeof value === "string" && nestedStrings !== "diff"
-          ? getNestedStringChange(property, value, nestedStrings)
-          : [changeType.pending, property, getChanges(a[property], value, { nestedStrings })]);
+      if (Array.isArray(value) && isDeepEqualForDiff(other, value)) {
+        continue;
       }
-    } else if (!isSameValueZero(a[property], value)) {
+      if (typeof value === "string" && nestedStrings !== "diff") {
+        // Unequal (isSameValueZero above): described without being diffed.
+        changeList = changeList ?? [];
+        changeList.push(getNestedStringChange(property, value, nestedStrings));
+        continue;
+      }
+
+      const childChanges = getChanges(other, value, { nestedStrings });
+
+      if (childChanges.length > 0) {
+        changeList = changeList ?? [];
+        changeList.push([changeType.pending, property, childChanges]);
+      }
+    } else {
+      changeList = changeList ?? [];
       changeList.push([changeType.update, property, value]);
     }
   }
 
-  return changeList;
+  return changeList ?? noRecordChanges;
 };
 
 /**

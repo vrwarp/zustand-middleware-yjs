@@ -1,5 +1,6 @@
-import { changeType, } from "./types";
-import { getChanges, } from "./diff";
+import * as fc from "fast-check";
+import { type Change, changeType, } from "./types";
+import { getChanges, isDeepEqualForDiff, } from "./diff";
 
 describe("getChanges", () => {
   describe("When given objects", () => {
@@ -599,5 +600,149 @@ describe("getChanges", () => {
         expect(getChanges(a, b)).toStrictEqual(diff);
       }
     );
+  });
+});
+describe("isDeepEqualForDiff and getChanges agree", () => {
+  /*
+   * getRecordChanges recurses into every changed same-type child and emits a
+   * pending change only when the child's list is non-empty, which reproduces
+   * the old isDeepEqualForDiff-prefiltered output exactly as long as
+   * isDeepEqualForDiff(a, b) === (getChanges(a, b).length === 0). The array
+   * lookahead also uses isDeepEqualForDiff as its equality test.
+   *
+   * Pairs are generated as twins (equal by default, diverging at random
+   * nodes) so that deep near-equal trees, the full-tree diff's common case,
+   * are frequent. Leaves cover the differ's quirks: NaN, -0, undefined,
+   * functions (shared and distinct), surrogate pairs and keys named like
+   * Object.prototype members.
+   */
+  type Pair = [left: unknown, right: unknown];
+
+  const sharedFunction = (): number => 1;
+  const otherFunction = (): number => 2;
+  const key = fc.constantFrom("a", "b", "c", "toString", "valueOf", "hasOwnProperty");
+  const leaf = fc.oneof(
+    fc.constantFrom(null, undefined, true, false, 0, -0, 1, Number.NaN, sharedFunction, otherFunction),
+    fc.constantFrom("", "x", "xy", "😀", "😁", "a😀b")
+  );
+  const toRecord = (entries: [string, unknown][]): Record<string, unknown> => {
+    const record: Record<string, unknown> = {};
+
+    for (const [property, value] of entries) {
+      record[property] = value;
+    }
+
+    return record;
+  };
+
+  const { arrayPair, recordPair, stringPair } = fc.letrec<{
+    pair: Pair;
+    arrayPair: Pair;
+    recordPair: Pair;
+    stringPair: Pair;
+  }>((tie) => ({
+    "pair": fc.oneof(
+      { "depthSize": "small" },
+      { "arbitrary": leaf.map((value): Pair => [value, value]), "weight": 4 },
+      { "arbitrary": fc.tuple(leaf, leaf), "weight": 1 },
+      { "arbitrary": tie("stringPair"), "weight": 1 },
+      { "arbitrary": tie("arrayPair"), "weight": 2 },
+      { "arbitrary": tie("recordPair"), "weight": 2 },
+      // A container shared by reference on both sides (state-vs-state).
+      { "arbitrary": tie("recordPair").map(([left]): Pair => [left, left]), "weight": 1 }
+    ),
+    "arrayPair": fc.tuple(
+      fc.array(tie("pair"), { "maxLength": 4 }),
+      fc.array(leaf, { "maxLength": 1 }),
+      fc.boolean()
+    ).map(([pairs, extra, isExtraOnLeft]): Pair => {
+      const left = pairs.map(([element]) => element);
+      const right = pairs.map(([, element]) => element);
+
+      (isExtraOnLeft ? left : right).push(...extra);
+
+      return [left, right];
+    }),
+    "recordPair": fc.tuple(
+      fc.uniqueArray(fc.tuple(key, tie("pair")), { "maxLength": 4, "selector": ([property]) => property }),
+      fc.array(fc.tuple(key, leaf), { "maxLength": 1 }),
+      fc.array(fc.tuple(key, leaf), { "maxLength": 1 })
+    ).map(([pairs, onlyLeft, onlyRight]): Pair => {
+      const left = toRecord(pairs.map(([property, [value]]) => [property, value]));
+      const right = toRecord(pairs.map(([property, [, value]]) => [property, value]));
+
+      for (const [property, value] of onlyLeft) {
+        if (!Object.hasOwn(left, property)) {
+          left[property] = value;
+        }
+      }
+      for (const [property, value] of onlyRight) {
+        if (!Object.hasOwn(right, property)) {
+          right[property] = value;
+        }
+      }
+
+      return [left, right];
+    }),
+    "stringPair": fc.oneof(
+      fc.string({ "maxLength": 4 }).map((text): Pair => [text, text]),
+      fc.tuple(fc.string({ "maxLength": 4 }), fc.string({ "maxLength": 4 }))
+    ),
+  }));
+  // getChanges only diffs same-type diffable pairs (anything else is []).
+  const diffablePair = fc.oneof(recordPair, arrayPair, stringPair);
+
+  it("isDeepEqualForDiff(a, b) is exactly getChanges(a, b).length === 0", () => {
+    fc.assert(fc.property(diffablePair, ([left, right]) => {
+      expect(isDeepEqualForDiff(left, right)).toBe(
+        getChanges(left as Record<string, unknown>, right as Record<string, unknown>).length === 0
+      );
+    }), { "numRuns": 2_000 });
+  });
+
+  it("a record diff matches the isDeepEqualForDiff-prefiltered reference", () => {
+    const isRecord = (value: unknown): value is Record<string, unknown> =>
+      typeof value === "object" && value !== null && !Array.isArray(value);
+    const isSameValueZero = (left: unknown, right: unknown): boolean =>
+      left === right || (Number.isNaN(left) && Number.isNaN(right));
+    const isDiffableSameType = (left: unknown, right: unknown): boolean =>
+      (typeof left === "string" && typeof right === "string") ||
+      (Array.isArray(left) && Array.isArray(right)) ||
+      (isRecord(left) && isRecord(right));
+
+    // The pre-single-pass getRecordChanges, recursing through itself.
+    const referenceChanges = (a: unknown, b: unknown): Change[] => {
+      if (!isRecord(a) || !isRecord(b)) {
+        return getChanges(a as unknown[], b as unknown[]);
+      }
+
+      const changeList: Change[] = [];
+
+      for (const [property, value] of Object.entries(a)) {
+        if (!Object.hasOwn(b, property) && !(value instanceof Function)) {
+          changeList.push([changeType.delete, property, undefined]);
+        }
+      }
+      for (const [property, value] of Object.entries(b)) {
+        if (!Object.hasOwn(a, property)) {
+          changeList.push([changeType.insert, property, value]);
+        } else if (isDiffableSameType(a[property], value)) {
+          if (!isDeepEqualForDiff(a[property], value)) {
+            changeList.push([changeType.pending, property, referenceChanges(a[property], value)]);
+          }
+        } else if (!isSameValueZero(a[property], value)) {
+          changeList.push([changeType.update, property, value]);
+        }
+      }
+
+      return changeList;
+    };
+
+    fc.assert(fc.property(recordPair, ([left, right]) => {
+      const a = left as Record<string, unknown>;
+      const b = right as Record<string, unknown>;
+
+      expect(getChanges(a, b)).toStrictEqual(referenceChanges(a, b));
+    }), { "numRuns": 2_000 });
   });
 });

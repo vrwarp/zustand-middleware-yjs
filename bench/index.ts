@@ -18,6 +18,8 @@
  * 6. Inbound catch-up observer cost: many in-place edits to elements of a
  *    large object array arriving in one tick (bench/inbound-catchup.ts).
  * 7. Nested change lists re-diffed at every pending level (nested-lists.ts).
+ * 8. Full-tree record diff cost by the changed key's position
+ *    (bench/record-diff.ts).
  *
  * Run with: npm run bench
  */
@@ -39,6 +41,7 @@ import { runInboundChildKeyBench } from "./inbound-child-keys";
 import { runInboundMixedBatchBench } from "./inbound-mixed-batch";
 import { runNestedListsBench } from "./nested-lists";
 import { formatRecordDeleteReport, runRecordDeleteBench } from "./record-delete";
+import { runRecordDiffBench } from "./record-diff";
 import { runStringDiffBench } from "./string-diffs";
 import { runColdStartRepresentationBench, runInboundBulkBench, runSharedMapBench, runVersicleBench } from "./versicle";
 import { runYArrayRunsBench } from "./yarray-runs";
@@ -382,6 +385,15 @@ const yArrayRunsReport = runYArrayRunsBench(record);
  * ---------------------------------------------------------------------- */
 
 for (const { meta, result } of runNestedListsBench()) {
+  record(result, meta);
+}
+
+/* -------------------------------------------------------------------------
+ * 4e. Full-tree record diff: cost by the changed key's position
+ *     (see bench/record-diff.ts; runnable on its own)
+ * ---------------------------------------------------------------------- */
+
+for (const { meta, result } of runRecordDiffBench()) {
   record(result, meta);
 }
 

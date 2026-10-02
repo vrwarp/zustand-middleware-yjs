@@ -191,7 +191,8 @@ O(d³) to O(d²), not to O(d). `getRecordChanges`' equality prefilter (§6)
 walks the whole changed path at every level before the diff recurses into it,
 and an unchanged sibling that precedes the changed key is still walked twice
 (prefilter, then diff). Folding the prefilter into the diff would remove both;
-at realistic depths (5–6) it is a small constant.
+at realistic depths (5–6) it is a small constant. §20 has since folded it
+into the diff for record children (array children keep the prefilter).
 
 ### 6. Deep-equality cost in full-tree object diffs
 
@@ -201,7 +202,8 @@ record key. Two changes cut that constant: `getRecordChanges` now uses the
 early-exit equality check as a prefilter (unchanged subtrees no longer build
 and discard trees of empty change lists), and the equality helper checks
 primitive `===` before any type classification and avoids per-field tuple
-allocations.
+allocations. The record prefilter has since been narrowed to array-valued
+children: on records it walked earlier siblings twice per level (§20).
 
 | scenario | before | after |
 |---|---:|---:|
@@ -941,6 +943,62 @@ share (the 1.8× above): a merged catch-up now costs what it costs a bare doc
 and long-lived are still better modelled as id-keyed records: map keys have
 no index to count.
 
+### 20. Record diffs re-walked earlier siblings once per level
+
+The §6 prefilter made a change's cost depend on where it sat in key order.
+`isDeepEqualForDiff` stops at a child's first difference, but to get there
+it fully walks every sibling subtree that precedes the changed path; when it
+reports a difference, `getChanges` then walks those same siblings again,
+prefiltering each one. That repeated at every ancestor level, so a node
+before the change at depth *d* was walked *d* times. In the
+`progress -> bookId -> deviceId` tree, a field update in the last book read
+the tree twice while the same update in the first book read it once; a wide
+record under *d* single-key wrappers (`{ settings: { library: { books } } }`)
+paid (*d* + 2)×. The newest entries come last in insertion order and are
+usually the active ones, so the worst case was the common one. It hit every
+legacy full-tree flush, every legacy or key-scoped inbound `patchState` (in
+`scopedDiff` mode: a remote device adding a book or a top-level key), and
+`scopedDiff` leaf fallbacks over nested records.
+
+**Fix:** `getRecordChanges` recurses into each changed record child once and
+keeps its pending change only when the child's list is non-empty. That is the
+old output exactly, because `isDeepEqualForDiff(a, b)` is
+`getChanges(a, b).length === 0`. Unchanged subtrees still allocate no change
+lists: `Object.keys` instead of `Object.entries`, a list allocated on the
+first change, and a shared frozen empty result. Array-valued children keep
+the prefilter. For an equal array (the common case) it is cheaper than
+`getChanges`, which would add a `toYArrayElements` scan and the lookahead
+setup. Its re-walk of a changed array's leading elements stays at that one
+level, since the records below now recurse in a single pass.
+
+Measured with the `bench/record-diff.ts` fixtures (§4e of the suite) at the
+versicle scale: 40 books, 24,000 sessions. Reads are the bench's
+deterministic count of property reads on the new-state tree. Times are CPU
+time, with the parent commit and the fix loaded in one process and
+interleaved, 5 runs × 21 samples, median of medians:
+
+| scenario | reads before | reads after | before | after |
+|---|---:|---:|---:|---:|
+| diff, unchanged tree | 148,601 | 148,601 | 9.3 ms | 9.2 ms |
+| diff, field update in the last book | 293,501 | 148,601 | 18.3 ms | 8.9 ms |
+| inbound `patchState`, last book | 293,501 | 148,601 | 18.6 ms | 9.2 ms |
+| legacy flush (`patchSharedType`), last book | 447,687 | 302,774 | 59.2 ms | 45.4 ms |
+| 1,000 entries under 4 wrapper levels, last entry | 47,992 | 8,005 | 4.85 ms | 0.58 ms |
+| patch/wide-map: update 1 of 1,000 nested objects | 20,017 | 16,010 | 4.29 ms | 2.87 ms |
+
+Every diff and `patchState` row now reads what an unchanged diff reads. The
+legacy flush still reads about 2× the tree for a change in any book, because
+`patchSharedType` re-diffed at each pending level, which is a separate cost
+(§5's change-list threading, developed in parallel, removes that re-diff;
+these numbers predate it).
+Unchanged trees read exactly what they read before and got a little cheaper
+on wide records, because `Object.keys` replaces `Object.entries`: the
+unchanged 1,000-entry record diffs in 0.85 ms instead of 1.05 ms and
+allocates 438 KB instead of 751 KB. The `patch/yarray` and full-tree e2e
+rows read the same as before, since their changes sit in an array or at
+depth 1. `scopedDiff` page turns are unaffected, since they already descend
+to the changed leaf.
+
 ## Downstream-shaped aging scenario (one hot top-level key)
 
 `bench/versicle.ts` models the shape §9 and §10 were found in: a single
@@ -1083,7 +1141,7 @@ run-to-run.)
 
 ## Regression coverage
 
-Fifteen structural test suites lock the fixes in without flaky wall-clock
+Sixteen structural test suites lock the fixes in without flaky wall-clock
 assertions:
 
 - `src/text-performance.spec.ts` — Y.Text run coalescing (item counts per
@@ -1222,3 +1280,10 @@ assertions:
   fast-check property pinning `getEventPathWithoutIndices` to `event.path`
   (random nested map/array edits with tombstones, local and remote, at the
   doc root and at a nested root).
+- `src/record-diff-single-pass.spec.ts` — the §20 fix: property reads on a
+  read-counting copy of the new state prove that a full-tree record diff and
+  an inbound `patchState` read each node once, whatever the changed key's
+  position (last book vs first book vs unchanged) and wrapper depth (0-4).
+  The fast-check properties in `src/diff.spec.ts` back the equivalence the
+  fix relies on: `isDeepEqualForDiff` agrees with an empty `getChanges`, and
+  record diffs match the old prefiltered output.
