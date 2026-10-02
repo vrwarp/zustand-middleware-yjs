@@ -786,6 +786,13 @@ export interface GetChangesOptions {
    * splices larger than the deep-equality lookahead window be detected at
    * pointer cost and confirmed with one deep equality against `a` (see
    * getArrayChanges). Ignored for strings and records.
+   *
+   * Top-level only: nested diffs never take it, and must not. The outbound
+   * applier applies a nested change list instead of re-diffing that child
+   * (isDiffedFromDoc in patching.ts), so every nested list must be exactly
+   * what a direct getChanges call on the same pair (with the same
+   * `nestedStrings` mode) returns. A deferred string pair is no list, so
+   * the applier re-diffs that child (a Y.Text) itself.
    */
   previousA?: unknown;
 

@@ -37,8 +37,10 @@ export interface PatchOptions extends MappingOptions {
    * Wrapped in an object so a legitimately-undefined snapshot value stays
    * distinguishable from "not provided". The snapshot MUST reflect the shared
    * type's current content — only safe under a stable parent key (Y.Map);
-   * Y.Array pending recursion recomputes because earlier sibling inserts and
-   * deletes shift element positions.
+   * Y.Array pending recursion does not thread it because earlier sibling
+   * inserts and deletes shift element positions away from the snapshot's
+   * indices (the element's nested change list needs no JSON, see
+   * ApplyChangesOptions.isDiffedFromDoc).
    */
   precomputedJson?: { readonly value: unknown };
 }
@@ -78,6 +80,21 @@ type ScopedKeyOptions = MappingOptions & Pick<ScopedPatchOptions, "unappliedInbo
  */
 interface ApplyChangesOptions extends PatchOptions {
   sharedTypeJson?: unknown;
+
+  /**
+   * Set when the change list was diffed from the shared type's CURRENT
+   * content: its JSON, taken in this transaction with nothing written to it
+   * since. The differ recurses into nested values with exactly the inputs a
+   * re-diff of a child would use (the child's slice of that JSON, the same
+   * new-state value, no previousA), so each pending entry already holds the
+   * child's change list, and the recursion applies it instead of
+   * serializing and diffing the child again. Left unset for a list diffed
+   * from anything else (previousState, while an inbound batch is
+   * unapplied): its nested lists describe state's children, not the doc's,
+   * so those children are re-diffed. Never inherited by a re-diff, which
+   * sets it for its own fresh list.
+   */
+  isDiffedFromDoc?: boolean;
 }
 
 const isDangerousKey = (key: string | number): boolean =>
@@ -433,6 +450,7 @@ const applyChangesToSharedType = (
     yTextKeys = [],
     jsonElementKeys = [],
     sharedTypeJson,
+    isDiffedFromDoc = false,
   }: ApplyChangesOptions = {}
 ): void => {
   /*
@@ -623,6 +641,10 @@ const applyChangesToSharedType = (
           childPreviousState = (options.previousState as Record<string, unknown>)[previousKey as string];
         }
 
+        // Anything but a real change list (or a list not diffed from the
+        // doc) makes the child re-diff itself.
+        const nestedChanges = isDiffedFromDoc && Array.isArray(value) ? value as Change[] : undefined;
+
         if (sharedType instanceof yjs.Map) {
           const prop = property as string;
           const existing = sharedType.get(prop);
@@ -660,16 +682,17 @@ const applyChangesToSharedType = (
                * so the recursion never re-serializes the subtree. Safe here
                * because `prop` is a stable Y.Map key and getRecordChanges
                * emits at most one change per key, so nothing in this loop has
-               * touched the child since the snapshot was taken.
+               * touched the child since the snapshot was taken (which is
+               * also what keeps `nestedChanges` valid).
                */
               const childJson = isPlainRecord(sharedTypeJson) && Object.hasOwn(sharedTypeJson, prop)
                 ? { "value": sharedTypeJson[prop] }
                 : undefined;
 
-              // syncedKeys is NOT threaded into recursion: nesting below a synced key replicates fully.
-              patchSharedType(
+              patchPendingChild(
                 existing as yjs.Map<unknown> | yjs.Array<unknown> | yjs.Text,
                 newValue,
+                nestedChanges,
                 {
                   atomicKeys,
                   disableYText,
@@ -738,9 +761,17 @@ const applyChangesToSharedType = (
               sharedType.delete(index);
               sharedType.insert(index, [newValue]);
             } else if (existing instanceof yjs.AbstractType) {
-              patchSharedType(
+              /*
+               * `index` is post-application: the earlier changes of this list
+               * have shifted the aligned element (the one the nested list was
+               * diffed from) to exactly this position. Never reorder or
+               * regroup the list's changes: that would break it, along with
+               * the previousState shift above.
+               */
+              patchPendingChild(
                 existing as yjs.Map<unknown> | yjs.Array<unknown> | yjs.Text,
                 newValue,
+                nestedChanges,
                 { atomicKeys, disableYText, yTextKeys, jsonElementKeys, previousState: childPreviousState }
               );
             } else {
@@ -761,6 +792,42 @@ const applyChangesToSharedType = (
       }
     }
   }
+};
+
+/**
+ * Patches the shared type behind a pending change. The differ has already
+ * recursed into it, so when the parent list was diffed from the doc the
+ * pending entry holds the child's own change list (`nestedChanges`): apply
+ * it directly instead of serializing and diffing the child again, which
+ * would repeat the whole diff below this level once per ancestor. Without
+ * one, diff the child from scratch.
+ *
+ * The `syncedKeys` whitelist is NOT threaded into recursion: nesting below a
+ * synced key replicates fully.
+ *
+ * @param child - The shared type to patch.
+ * @param newState - The child's new state.
+ * @param nestedChanges - The child's change list, when it can be trusted.
+ * @param patchOptions - Mapping options, the child's previousState, and its
+ * JSON snapshot when the parent has one.
+ */
+const patchPendingChild = (
+  child: yjs.Map<unknown> | yjs.Array<unknown> | yjs.Text,
+  newState: unknown,
+  nestedChanges: Change[] | undefined,
+  { precomputedJson, ...options }: PatchOptions
+): void => {
+  if (nestedChanges === undefined) {
+    patchSharedType(child, newState, { ...options, precomputedJson });
+
+    return;
+  }
+
+  applyChangesToSharedType(child, nestedChanges, newState, {
+    ...options,
+    "isDiffedFromDoc": true,
+    "sharedTypeJson": precomputedJson?.value,
+  });
 };
 
 /**
@@ -827,7 +894,11 @@ export const patchSharedType = (
     { "nestedStrings": "defer" }
   );
 
-  // syncedKeys is intentionally NOT forwarded: it filters only the root diff.
+  /*
+   * syncedKeys is intentionally NOT forwarded: it filters only the root diff
+   * (the nested lists of the keys it keeps are unaffected by it). `a` is the
+   * shared type's own JSON, so its nested lists can be applied as they are.
+   */
   applyChangesToSharedType(sharedType, changes, b, {
     atomicKeys,
     disableYText,
@@ -835,6 +906,7 @@ export const patchSharedType = (
     yTextKeys,
     jsonElementKeys,
     sharedTypeJson: a,
+    isDiffedFromDoc: true,
   });
 };
 
@@ -990,8 +1062,9 @@ const scopedPatchKey = (
      * When those transactions cannot have restructured it, its positions
      * still match previousState: apply only what the local batch changed.
      */
-    const changes = unappliedInboundTargets !== undefined &&
-      isArrayStructureUnchanged(existing, previousElements.length, unappliedInboundTargets)
+    const isDiffedFromPreviousState = unappliedInboundTargets !== undefined &&
+      isArrayStructureUnchanged(existing, previousElements.length, unappliedInboundTargets);
+    const changes = isDiffedFromPreviousState
       ? getChanges(previousElements, nextValue, { "nestedStrings": "defer", "previousA": prevValue })
       : getChanges(existing.toJSON() as unknown[], nextValue, { "nestedStrings": "defer", "previousA": prevValue });
 
@@ -999,7 +1072,13 @@ const scopedPatchKey = (
       existing,
       changes,
       nextValue,
-      { ...mappingOptions, "previousState": prevValue }
+      /*
+       * Diffed from previousState, the nested lists describe state's
+       * elements, not the doc's (which may hold those remote edits):
+       * applied to a remotely edited Y.Text they would interleave the two
+       * edits. The pending recursion re-diffs such elements instead.
+       */
+      { ...mappingOptions, "isDiffedFromDoc": !isDiffedFromPreviousState, "previousState": prevValue }
     );
 
     return;
@@ -1062,8 +1141,9 @@ const scopedPatchKey = (
     getChanges(a, b, { "nestedStrings": "defer" }),
     b,
     // Threading `a` lets the pending recursion for this key reuse the
-    // toJSON() snapshot taken above instead of serializing the subtree twice.
-    { ...mappingOptions, "previousState": prevRecord, "sharedTypeJson": a }
+    // toJSON() snapshot taken above (and the list diffed from it) instead of
+    // serializing and diffing the subtree twice.
+    { ...mappingOptions, "isDiffedFromDoc": true, "previousState": prevRecord, "sharedTypeJson": a }
   );
 };
 

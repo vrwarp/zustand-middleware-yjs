@@ -127,7 +127,7 @@ item, so if your workload removes large mid-array blocks from lists it
 rebuilds, model the list as an object keyed by id, or split it across
 top-level keys.
 
-### 5. Repeated subtree serialization in nested recursion
+### 5. Repeated subtree serialization and re-diffing in nested recursion
 
 `patchSharedType` serialized the whole shared type at the root, then every
 `pending` recursion called `toJSON()` on its child again — the parent's
@@ -137,10 +137,61 @@ of `scopedDiff`, whose per-key snapshot was re-serialized by the recursion.
 
 **Fix:** the already-computed JSON snapshot is threaded down through Y.Map
 pending recursion (`precomputedJson`), so each subtree is serialized exactly
-once per flush. Y.Array pending recursion still re-serializes its (changed)
-elements: earlier sibling inserts/deletes shift positions, so a precomputed
-snapshot cannot be trusted there. A structural test asserts the call count
-(one serialization per level) so regressions are caught without timing.
+once per flush. Earlier sibling inserts/deletes shift Y.Array positions away
+from the snapshot's indices, so the snapshot is not threaded into Y.Array
+elements (the change lists below make that unnecessary). A structural test
+asserts the call count (one serialization per level) so regressions are
+caught without timing.
+
+The same duplication remained for the change lists. `getChanges` recurses all
+the way down, so the root diff already holds the complete nested change tree
+(one diff per changed node), yet every `pending` recursion called
+`patchSharedType` on its child, which diffed the child again from scratch. A
+change at depth *d* was diffed (d+1)(d+2)/2 times, every unchanged sibling
+under a changed ancestor was deep-compared once per ancestor level — roughly
+doubling the O(state) comparison of a legacy full-tree flush — and changed
+Y.Array elements were serialized a second time by the recursion.
+
+**Fix (change lists):** the applier applies the nested list the parent's
+`pending` entry already carries instead of re-diffing the child
+(`isDiffedFromDoc` in `src/patching.ts`). It is pure memoization: `getChanges`
+recurses with exactly the inputs a re-diff would use (the child's slice of the
+same snapshot, the same new-state value, no `previousA`), and a Y.Array
+element is patched at its post-application index, which by construction holds
+the aligned element its nested list was diffed from (the invariant the
+`previousState` alignment already relies on). The child is still re-diffed
+when the parent list was diffed from something other than the doc — the
+scoped array leaf diffs `previousState` while an inbound batch is unapplied,
+and its nested lists describe state's elements: applied to a remotely edited
+`Y.Text` they would interleave the two edits — and for any pending value that
+is not a change list.
+
+| scenario (legacy full-tree flush) | before | after |
+|---|---:|---:|
+| leaf at depth 6 / 12 / 24: `getChanges` calls | 28 / 91 / 325 | 7 / 13 / 25 |
+| leaf at depth 24: equality-helper calls | 2,600 | 300 |
+| leaf at depth 24 | 0.80 ms | 0.12 ms |
+| update 1 field of one object in a 2,000-object Y.Array | 14.2 ms | 9.4 ms |
+| page turn, 10 / 40 books: `getChanges` calls | 19 / 19 | 6 / 6 |
+| page turn, 10 / 40 books: equality-helper calls | 13,974 / 50,394 | 6,686 / 24,896 |
+| page turn, 10 books | 17.8 ms | 11.1 ms |
+| page turn, 40 books | 80.0 ms | 56.9 ms |
+
+(Page turn: the legacy-mode versicle-shaped scenario in
+`bench/nested-lists.ts`. Timings are medians of five in-process interleaved
+A/B runs on a loaded shared machine and vary ±20%; the counters are exact.)
+
+The win is in the default full-tree mode, ~1.3–1.6× per nested write. Under
+`scopedDiff` the diff is already confined to the changed branch, so it only
+saves one serialization and one re-diff per changed Y.Array element; the
+versicle-shaped scoped page turn is unchanged.
+
+**Remaining floor:** total node visits along a deep changed path drop from
+O(d³) to O(d²), not to O(d). `getRecordChanges`' equality prefilter (§6)
+walks the whole changed path at every level before the diff recurses into it,
+and an unchanged sibling that precedes the changed key is still walked twice
+(prefilter, then diff). Folding the prefilter into the diff would remove both;
+at realistic depths (5–6) it is a small constant.
 
 ### 6. Deep-equality cost in full-tree object diffs
 
@@ -1032,7 +1083,7 @@ run-to-run.)
 
 ## Regression coverage
 
-Fourteen structural test suites lock the fixes in without flaky wall-clock
+Fifteen structural test suites lock the fixes in without flaky wall-clock
 assertions:
 
 - `src/text-performance.spec.ts` — Y.Text run coalescing (item counts per
@@ -1043,6 +1094,16 @@ assertions:
   against the Y.Array applier with high-collision arrays), Y.Array delete-run
   coalescing (large-clear ceiling), and precomputed-JSON threading (a
   `toJSON` call-count spy proving one serialization per subtree per flush).
+- `src/nested-change-lists.spec.ts` — §5's change-list threading:
+  `getChanges` calls per changed node at depth 6/12/24 (plus a sanity check
+  that the spy sees the differ's own recursion), an O(d²)-not-O(d³) scaling
+  ratio in state-record visits, unchanged siblings compared once per flush,
+  no node diffed twice in a legacy versicle-shaped page turn, changed Y.Array
+  elements serialized at most once, a fast-check property asserting
+  byte-identical Yjs updates against a forced re-diff of every pending child,
+  and same-tick races (through the middleware, and `patchSharedTypeScoped`
+  with `unappliedInboundTargets`) proving a list diffed from previousState is
+  never applied to a remotely edited `Y.Text`.
 - `src/branch-scoped-diff.spec.ts` — the §9/§10 fixes: a `toJSON` spy
   proving sibling branches are never serialized when one branch changes,
   first-flush whole-subtree backfill, no resurrection of concurrently

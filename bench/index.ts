@@ -17,6 +17,7 @@
  *    (bench/string-diffs.ts).
  * 6. Inbound catch-up observer cost: many in-place edits to elements of a
  *    large object array arriving in one tick (bench/inbound-catchup.ts).
+ * 7. Nested change lists re-diffed at every pending level (nested-lists.ts).
  *
  * Run with: npm run bench
  */
@@ -36,6 +37,7 @@ import {
 import { runInboundCatchUpBench } from "./inbound-catchup";
 import { runInboundChildKeyBench } from "./inbound-child-keys";
 import { runInboundMixedBatchBench } from "./inbound-mixed-batch";
+import { runNestedListsBench } from "./nested-lists";
 import { formatRecordDeleteReport, runRecordDeleteBench } from "./record-delete";
 import { runStringDiffBench } from "./string-diffs";
 import { runColdStartRepresentationBench, runInboundBulkBench, runSharedMapBench, runVersicleBench } from "./versicle";
@@ -372,6 +374,16 @@ const makeDeepState = (
 console.error("  running Y.Array bulk-insert scenarios...");
 
 const yArrayRunsReport = runYArrayRunsBench(record);
+
+/* -------------------------------------------------------------------------
+ * 4d. Nested change lists recomputed at every pending level
+ *     (bench/nested-lists.ts: getChanges calls per flush, state records visited,
+ *     changed-element serializations)
+ * ---------------------------------------------------------------------- */
+
+for (const { meta, result } of runNestedListsBench()) {
+  record(result, meta);
+}
 
 /* -------------------------------------------------------------------------
  * 5. End-to-end outbound flush: legacy full-tree diff vs scopedDiff
