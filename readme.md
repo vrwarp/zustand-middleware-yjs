@@ -125,7 +125,9 @@ const useSharedStore = create(
 
 To support backwards-incompatible breaking changes to your data model, you can provide a `schemaVersion` option. If a remote peer writes a `__schemaVersion` to the Yjs document that is strictly *greater* than your local `schemaVersion`, the middleware permanently halts all outbound and inbound synchronization. This "Poison Pill" prevents legacy clients from corrupting newly upgraded data structures offline and unintentionally syncing that corruption back to the network.
 
-When the poison pill is triggered, the `onObsolete` callback is fired, allowing your application to display an update prompt or reload the page.
+The same check runs when the store is created, so it also covers the cold-start case where a persistence provider loaded an already-upgraded document before the store was constructed. Such a store is never hydrated from the newer data: it keeps its declared defaults, and `onLoaded` does not fire.
+
+When the poison pill is triggered, the `onObsolete` callback is fired, allowing your application to display an update prompt or reload the page. When the document is already newer at creation, `getYjsStoreHandle(store).isObsolete()` is true immediately and `onObsolete` fires in a microtask, after the store has been created.
 
 ```tsx
 const useSharedStore = create(

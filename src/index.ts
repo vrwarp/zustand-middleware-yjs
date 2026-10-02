@@ -72,17 +72,19 @@ export interface YjsOptions {
   onLoaded?: () => void;
 
   /**
-   * The schema version this client supports. When a remote peer writes a
-   * higher `__schemaVersion` into the Yjs document, the middleware permanently
-   * halts synchronization to prevent legacy clients from corrupting upgraded
-   * data structures.
+   * The schema version this client supports. When the Yjs document holds a
+   * higher `__schemaVersion` (already at store creation, or written later by
+   * a remote peer), the middleware permanently halts synchronization to
+   * prevent legacy clients from corrupting upgraded data structures. A store
+   * that is obsolete at creation is not hydrated and keeps its defaults.
    */
   schemaVersion?: number;
 
   /**
    * Called once when the middleware detects a `__schemaVersion` in the Yjs
    * document that exceeds the local `schemaVersion`. After this fires, all
-   * inbound and outbound sync is permanently disabled.
+   * inbound and outbound sync is permanently disabled. When the document is
+   * already newer at store creation, the call is deferred to a microtask.
    *
    * @param incomingVersion - The schema version found in the Yjs document.
    */
@@ -311,13 +313,44 @@ const yjsImpl: YjsImpl = <S>(
   let isObsolete = false;
 
   /**
+   * Poison Pill Check (always on the TOP-LEVEL named map — the obsolete check
+   * is unaffected by scoping). Returns the doc's `__schemaVersion` when it
+   * exceeds the local `schemaVersion`, otherwise undefined.
+   */
+  const getNewerSchemaVersion = (): number | undefined => {
+    if (schemaVersion === undefined) {
+      return undefined;
+    }
+
+    const incomingVersion = (rootMap.get("__schemaVersion") as number | undefined) || 0;
+
+    return incomingVersion > schemaVersion ? incomingVersion : undefined;
+  };
+
+  /**
    * Augment the store.
    */
   return (set, get, api) => {
+    /*
+     * The doc may already hold a newer schema at creation (a persistence
+     * provider loaded it before the store was constructed). The observer only
+     * sees later transactions, so check here as well: skip onLoaded and the
+     * creation hydration, keeping the declared defaults. onObsolete is
+     * deferred so it never runs while the store is still being created.
+     */
+    const creationSchemaVersion = getNewerSchemaVersion();
+
+    if (creationSchemaVersion !== undefined) {
+      isObsolete = true;
+      queueMicrotask(() => {
+        onObsolete?.(creationSchemaVersion);
+      });
+    }
+
     // Initialize the loading state.
     let isLoaded = false;
 
-    if ((getDataMap()?.size ?? 0) > 0) {
+    if (!isObsolete && (getDataMap()?.size ?? 0) > 0) {
       isLoaded = true;
       onLoaded?.();
     }
@@ -511,7 +544,7 @@ const yjsImpl: YjsImpl = <S>(
 
     const creationDataMap = getDataMap();
 
-    if (creationDataMap !== undefined && creationDataMap.size > 0) {
+    if (!isObsolete && creationDataMap !== undefined && creationDataMap.size > 0) {
       initialState = computeInboundState(
         initialState,
         creationDataMap.toJSON(),
@@ -713,17 +746,14 @@ const yjsImpl: YjsImpl = <S>(
         return;
       } // Permanently disabled
 
-      // 1. Poison Pill Check (always on the TOP-LEVEL named map — the obsolete
-      // check is unaffected by scoping).
-      if (schemaVersion !== undefined) {
-        const incomingVersion = (rootMap.get("__schemaVersion") as number | undefined) || 0;
+      // 1. Poison Pill Check.
+      const incomingVersion = getNewerSchemaVersion();
 
-        if (incomingVersion > schemaVersion) {
-          isObsolete = true;
-          onObsolete?.(incomingVersion);
+      if (incomingVersion !== undefined) {
+        isObsolete = true;
+        onObsolete?.(incomingVersion);
 
-          return;
-        }
+        return;
       }
 
       if (!touchesScope(events)) {
