@@ -442,10 +442,13 @@ const yjsImpl: YjsImpl = <S>(
         // Under 'replace' a never-set default the doc lacks would be deleted
         // by every full inbound patch (reloads, peers), so write it now as
         // the full diff does; merge-defaults retains it and backfills lazily.
+        // Not while an inbound batch is unapplied: a key the doc lacks may
+        // then be a remote delete state has not seen yet, and the next flush
+        // backfills any key that is still absent.
         doc.transact(() => {
           patchSharedTypeScoped(ensureDataMap(), state, previousState, {
             ...sharedOptions,
-            backfillAbsentKeys: hydration !== "merge-defaults",
+            backfillAbsentKeys: hydration !== "merge-defaults" && !hasUnappliedInbound,
           });
         }, api);
 

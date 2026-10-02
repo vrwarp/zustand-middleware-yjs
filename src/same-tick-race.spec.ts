@@ -138,6 +138,36 @@ describe.each(modes)("same-tick local set() and remote transaction (%s)", (_labe
     expect(remote.getMap("s").toJSON()).toEqual({ x: 5, y: 2 });
   });
 
+  it("local set() then remote delete of another key: the delete is not undone", async () => {
+    const { local, remote, store } = await setup();
+
+    // Same tick: local write first, then the remote peer deletes x. The doc
+    // lacks x while state still holds it, so the flush must not take x for
+    // a never-written default and write it back.
+    store.setState({ y: 2 });
+    remote.getMap("s").delete("x");
+
+    await settle();
+
+    expect(store.getState()).toEqual({ y: 2 });
+    expect(local.getMap("s").toJSON()).toEqual({ y: 2 });
+    expect(remote.getMap("s").toJSON()).toEqual({ y: 2 });
+  });
+
+  it("remote delete then local set() of another key: the delete is not undone", async () => {
+    const { local, remote, store } = await setup();
+
+    // Same tick: remote delete first, local write second.
+    remote.getMap("s").delete("x");
+    store.setState({ y: 2 });
+
+    await settle();
+
+    expect(store.getState()).toEqual({ y: 2 });
+    expect(local.getMap("s").toJSON()).toEqual({ y: 2 });
+    expect(remote.getMap("s").toJSON()).toEqual({ y: 2 });
+  });
+
   it("handle.flush() while a remote edit is still queued inbound does not revert it", async () => {
     const { local, remote, store } = await setup();
 
