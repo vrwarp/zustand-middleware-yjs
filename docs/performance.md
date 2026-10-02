@@ -391,7 +391,7 @@ The 4,000-into-4,000 row is on par (the samples overlap; a focused re-run
 with 9 samples per round measured 48 → 32 ms, and 2,000 into 2,000
 25 → 11 ms). The delete rows also stop paying the key-scoped route's
 per-key record rebuild in the inbound state applier, which a deep diff of
-a record with many deletions still pays elsewhere.
+a record with many deletions paid elsewhere until §14 made it one pass.
 
 What remains on a flat record is the immutable copy of the record itself
 (O(keys), ~7 ms at 16,000 annotations), which every structurally shared
@@ -472,6 +472,44 @@ batch (O(P + W)), and stays flat in P under a fixed parent. (The 1,000 row
 runs first in each process and is the noisiest: 7.3-28.7 ms after the fix.) A single-path
 batch (a page turn) still pays one O(W) spread of its parent; that copy is
 inherent to the immutable-update contract and is unchanged.
+
+### 14. Inbound bulk record deletes (quadratic)
+
+Every inbound route — the §11 deep-path route, the key-scoped route, the
+legacy full-tree route and creation hydration — ends in the state applier,
+and its record case rebuilt the whole record (`Object.entries` + `filter` +
+`Object.fromEntries`) once per `[delete, key]` change. A peer removing k
+entries from one n-key record therefore cost O(n × k) on every receiving
+device's main thread: bulk-deleting books, clearing or pruning an id-keyed
+annotations or progress map, or an offline device catching up on many
+separate deletes (inbound transactions in one tick merge into one patch).
+
+**Fix:** `applyChangesToObject` collects deleted keys in a Set and filters
+the record once at the end — O(n + k). The output is unchanged:
+`getRecordChanges` never deletes and writes the same key in one list, so
+survivors keep their relative order and inserts still append. The rebuild
+stays on `Object.fromEntries`, which keeps an own `"__proto__"` key as data
+(plain assignment would set the prototype), and a change list without
+deletes still returns the single spread copy.
+
+`bench/record-delete.ts` (interleaved A/B, median of 5 rounds; `enumerated`
+is the deterministic count of record entries materialized by the `Object`
+enumeration built-ins):
+
+| scenario | before | after |
+|---|---:|---:|
+| `patchState`: delete 500 of 1,000 keys | 303 ms (752,502) | 2.3 ms (4,002) |
+| `patchState`: delete 1,000 of 2,000 keys | **1,653 ms** (3,005,002) | **6.7 ms** (8,002) |
+| `patchState`: clear 1,000 keys | 284 ms (1,002,002) | 1.1 ms (3,002) |
+| inbound, deep route: peer deletes 500 of 1,000 books | 349 ms | 10.1 ms |
+| inbound, deep route: peer deletes 1,000 of 2,000 books | **1,827 ms** | **23.3 ms** |
+| inbound, key-scoped route: 500 of 1,000 | 290 ms | 7.4 ms |
+| inbound, legacy route: 500 of 1,000 | 289 ms | 6.9 ms |
+
+The before column grows with n × k (4× the entries for 2× n and 2× k, and
+more than 4× the time once GC joins in); the after column grows with n.
+At today's library sizes (tens to hundreds of books) the old cost was at
+most ~15 ms; the win is for id-keyed maps with thousands of entries.
 
 ## Downstream-shaped aging scenario (one hot top-level key)
 
@@ -601,7 +639,7 @@ run-to-run.)
 
 ## Regression coverage
 
-Six structural test suites lock the fixes in without flaky wall-clock
+Seven structural test suites lock the fixes in without flaky wall-clock
 assertions:
 
 - `src/text-performance.spec.ts` — Y.Text run coalescing (item counts per
@@ -655,3 +693,10 @@ assertions:
   batch under the same 5,000-record parent, never an absolute time;
   1.1-1.4 fixed, 30-36 unfixed, limit 6) proving the shared parent is copied
   once per batch, not once per changed record.
+- `src/inbound-record-delete.spec.ts` — the §14 fix: spies on the `Object`
+  enumeration built-ins count the record entries materialized per patch,
+  pinning a ~4× (not ~16×) cost ratio at 4× record width and delete count,
+  and deleting half of a 1,000-key record at no more than twice the cost of
+  deleting one key — on `patchState`, all three inbound routes and creation
+  hydration. Guards for survivor key order and for an own `"__proto__"` key
+  staying data rather than becoming the prototype.

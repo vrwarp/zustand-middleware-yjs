@@ -30,6 +30,7 @@ import {
   randomText,
 } from "./harness";
 import { runInboundChildKeyBench } from "./inbound-child-keys";
+import { formatRecordDeleteReport, runRecordDeleteBench } from "./record-delete";
 import { runInboundBulkBench, runVersicleBench } from "./versicle";
 
 // Deterministic perf runs: disable the DEV-only sampled convergence check so
@@ -681,8 +682,15 @@ console.log(`
 | final map.toJSON() (ms) | ${agedObjectReport.finalToJsonMs.toFixed(3)} |
 `);
 
-console.error("  running versicle-shaped aging scenario...");
-runVersicleBench()
+console.error("  running inbound bulk record-delete scenario...");
+runRecordDeleteBench()
+  .then((recordDeleteResults) => {
+    // eslint-disable-next-line no-console
+    console.log(`\n${formatRecordDeleteReport(recordDeleteResults)}`);
+    console.error("  running versicle-shaped aging scenario...");
+
+    return runVersicleBench();
+  })
   .then((report) => {
     // eslint-disable-next-line no-console
     console.log(`\n${report}`);

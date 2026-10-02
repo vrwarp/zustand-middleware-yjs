@@ -1017,7 +1017,12 @@ const applyChangesToArray = (initialArray: unknown[], arrayChanges: Change[]): u
 };
 
 const applyChangesToObject = (initialObject: Record<string, unknown>, objectChanges: Change[]): Record<string, unknown> => {
-  let revisedObject = { ...initialObject };
+  const revisedObject = { ...initialObject };
+  /*
+   * Deleted keys are removed in one pass at the end: rebuilding the record
+   * once per delete made k deletes from an n-key record O(n * k).
+   */
+  let deletedKeys: Set<string> | undefined;
 
   for (const [type, property, value] of objectChanges) {
     const prop = property as string;
@@ -1035,15 +1040,19 @@ const applyChangesToObject = (initialObject: Record<string, unknown>, objectChan
       case changeType.insert:
       case changeType.update: {
         revisedObject[prop] = value;
+        // getRecordChanges never deletes and writes one key in one list;
+        // should a later write follow a delete anyway, it must not be lost.
+        deletedKeys?.delete(prop);
         break;
       }
       case changeType.pending: {
         revisedObject[prop] = applyChanges(revisedObject[prop] as string | unknown[] | Record<string, unknown>, value as Change[]);
+        deletedKeys?.delete(prop);
         break;
       }
       case changeType.delete: {
-        // Filter keys to avoid the delete operator
-        revisedObject = Object.fromEntries(Object.entries(revisedObject).filter(([p]) => p !== prop));
+        deletedKeys = deletedKeys ?? new Set<string>();
+        deletedKeys.add(prop);
         break;
       }
       case changeType.none:
@@ -1053,7 +1062,13 @@ const applyChangesToObject = (initialObject: Record<string, unknown>, objectChan
     }
   }
 
-  return revisedObject;
+  if (deletedKeys === undefined) {
+    return revisedObject;
+  }
+
+  // Filter keys to avoid the delete operator. Object.fromEntries keeps an own
+  // "__proto__" key as a data property; assignment would set the prototype.
+  return Object.fromEntries(Object.entries(revisedObject).filter(([p]) => !deletedKeys.has(p)));
 };
 
 const applyChanges = (
