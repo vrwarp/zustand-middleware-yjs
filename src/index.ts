@@ -5,6 +5,7 @@ import type {
 } from "zustand";
 import { isDeepEqualForDiff } from "./diff";
 import { isDevEnvironment } from "./env";
+import { toJsonElement } from "./mapping";
 import {
   assertScopedDiffConvergence,
   computeInboundState,
@@ -1028,12 +1029,19 @@ const yjsImpl: YjsImpl = <S>(
 
       const foreignKeys = new Set<string>();
 
+      /*
+       * Compare the doc value with the form the flush stored state[key] in
+       * (toJsonElement: an array's holes and undefined elements as null, no
+       * functions), not with state[key] itself: a state array holding a
+       * hole compares unequal to the null stored for it, which would take
+       * the store's own write for the caller's.
+       */
       for (const key of changedKeys) {
         const value = dataMap.get(key);
         const isFlushed = dataMap.has(key)
           ? Object.hasOwn(state, key) && isDeepEqualForDiff(
-            state[key],
-            value instanceof yjs.AbstractType ? value.toJSON() : value
+            value instanceof yjs.AbstractType ? value.toJSON() : value,
+            toJsonElement(state[key])
           )
           : !Object.hasOwn(state, key);
 

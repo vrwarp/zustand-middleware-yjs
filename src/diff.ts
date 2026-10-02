@@ -253,7 +253,7 @@ const getChangesText = (a: string, b: string): Change[] => {
 
 /**
  * Element-wise isDeepEqualForDiff for two arrays. An element a Y.Array cannot
- * store (undefined, a function) never matches, not even itself: it is
+ * store (undefined, a hole, a function) never matches, not even itself: it is
  * compared in its stored form instead (see isDeepEqualForDiff).
  */
 const isEveryElementEqualForDiff = (a: unknown[], b: unknown[]): boolean => {
@@ -261,16 +261,27 @@ const isEveryElementEqualForDiff = (a: unknown[], b: unknown[]): boolean => {
     return false;
   }
 
-  return a.every((left, index) => {
+  /*
+   * An indexed loop, as getArrayChanges walks `a`: every() skips the holes
+   * of a sparse `a` (inbound, `a` is the store's state and `b` the doc), so
+   * a remote write into a slot the state holds as a hole compared equal and
+   * was dropped. entries() would allocate a tuple per element.
+   */
+  // eslint-disable-next-line unicorn/no-for-loop -- holes must be visited (see above)
+  for (let index = 0; index < a.length; index = index + 1) {
+    const left = a[index];
     const right = b[index];
+    const isEqual = isSameValueZero(left, right)
+      ? right !== undefined && typeof right !== "function"
+      : isDiffable(left) && isDiffable(right) && isSameType(left, right) &&
+        isDeepEqualForDiff(left, right);
 
-    if (isSameValueZero(left, right)) {
-      return right !== undefined && typeof right !== "function";
+    if (!isEqual) {
+      return false;
     }
+  }
 
-    return isDiffable(left) && isDiffable(right) && isSameType(left, right) &&
-      isDeepEqualForDiff(left, right);
-  });
+  return true;
 };
 
 /**
