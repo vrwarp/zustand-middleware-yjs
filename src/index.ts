@@ -482,6 +482,59 @@ const yjsImpl: YjsImpl = <S>(
       transaction.meta.set(api, ownFlush);
     };
 
+    /**
+     * The shared types under this store's data map that a caller's
+     * doc.transact, still open around this flush, already changed (undefined:
+     * none). Yjs runs the observer only when that transaction ends, so those
+     * writes are in the doc but not yet in state, like an unapplied inbound
+     * batch. Each comes with the keys changed in it when it is a Y.Map, as
+     * the observer records an inbound event target (see
+     * unappliedInboundTargets).
+     */
+    const getOpenTransactionTargets = (): Map<unknown, Set<string>> | undefined => {
+      const transaction = doc._transaction;
+
+      // The observer drops what is written under this store's origin as a
+      // local echo, so it is not inbound.
+      if (transaction === null || transaction.origin === api) {
+        return undefined;
+      }
+
+      const dataMap = getDataMap();
+      let targets: Map<unknown, Set<string>> | undefined;
+
+      for (const [changedType, keys] of transaction.changed) {
+        let type: unknown = changedType;
+        // Yjs records no changes inside a type created in this transaction:
+        // a scoped child placed, replaced or removed in it shows up only as
+        // a change of the root map's scope key.
+        let isUnderDataMap = scopeKey !== undefined && type === rootMap && keys.has(scopeKey);
+
+        while (!isUnderDataMap && type instanceof yjs.AbstractType) {
+          isUnderDataMap = type === dataMap;
+          type = type.parent;
+        }
+
+        if (isUnderDataMap) {
+          const changedKeys = new Set<string>();
+
+          targets = targets ?? new Map();
+          targets.set(changedType, changedKeys);
+
+          // A Y.Map's changed keys are what its event's keysChanged would be.
+          if (changedType instanceof yjs.Map) {
+            for (const key of keys) {
+              if (key !== null) {
+                changedKeys.add(key);
+              }
+            }
+          }
+        }
+      }
+
+      return targets;
+    };
+
     const flushOutbound = () => {
       isOutboundPending = false;
       const previousState = batchPreviousState;
@@ -504,12 +557,26 @@ const yjsImpl: YjsImpl = <S>(
 
       /*
        * A foreign transaction whose inbound batch has not run yet is already
-       * in the doc but not in state, so a doc-vs-state diff would write the
-       * stale local values back over it. Write only what changed since the
-       * batch-start previousState instead (the scoped diff is that three-way
-       * merge), whatever the diff mode.
+       * in the doc but not in state, as is a write made earlier in a
+       * caller's doc.transact that this flush runs inside. A doc-vs-state
+       * diff would write the stale local values back over it. Write only
+       * what changed since the batch-start previousState instead (the scoped
+       * diff is that three-way merge), whatever the diff mode.
        */
-      const hasUnappliedInbound = isUpdatePending;
+      const openTransactionTargets = getOpenTransactionTargets();
+      const hasUnappliedInbound = isUpdatePending || openTransactionTargets !== undefined;
+      let unappliedTargets: ReadonlyMap<unknown, ReadonlySet<string>> | undefined = unappliedInboundTargets;
+
+      if (openTransactionTargets !== undefined) {
+        const mergedTargets = new Map<unknown, ReadonlySet<string>>(unappliedInboundTargets);
+
+        for (const [type, keys] of openTransactionTargets) {
+          const inboundKeys = mergedTargets.get(type);
+
+          mergedTargets.set(type, inboundKeys === undefined ? keys : new Set([...inboundKeys, ...keys]));
+        }
+        unappliedTargets = mergedTargets;
+      }
 
       if ((scopedDiff || hasUnappliedInbound) && previousState !== undefined) {
         // Scoped path: diff only the Object.is-changed top-level keys, each
@@ -537,7 +604,7 @@ const yjsImpl: YjsImpl = <S>(
           patchSharedTypeScoped(dataMap, state, previousState, {
             ...sharedOptions,
             backfillAbsentKeys: isReplaceHydration && isHydrated && !hasUnappliedInbound,
-            unappliedInboundTargets: hasUnappliedInbound ? unappliedInboundTargets : undefined,
+            unappliedInboundTargets: hasUnappliedInbound ? unappliedTargets : undefined,
           });
           recordOwnFlush(transaction, dataMap, state);
         }, api);
