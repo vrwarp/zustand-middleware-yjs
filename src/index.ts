@@ -802,17 +802,8 @@ const yjsImpl: YjsImpl = <S>(
     ): Record<string, unknown> =>
       { return dataMap === undefined ? {} : pickMapJson(dataMap, keys) };
 
-    const processBatch = () => {
-      /*
-       * Flush a pending local write into the doc first, while this batch
-       * still counts as unapplied (so the flush writes only the local
-       * change): patching state from the doc below would otherwise roll the
-       * write back, and the later flush would find nothing to send.
-       */
-      if (isOutboundPending) {
-        flushOutbound();
-      }
-
+    /** Applies the doc changes of the current inbound batch to state. */
+    const applyInboundBatch = () => {
       isUpdatePending = false;
       unappliedInboundTargets = undefined;
 
@@ -931,6 +922,27 @@ const yjsImpl: YjsImpl = <S>(
         }
       );
       markHydrated(); // hydration source (b): first applied inbound batch
+    };
+
+    const processBatch = () => {
+      /*
+       * Flush a pending local write into the doc first, while this batch
+       * still counts as unapplied (so the flush writes only the local
+       * change): patching state from the doc below would otherwise roll the
+       * write back, and the later flush would find nothing to send.
+       *
+       * The batch is applied even when the flush throws (an observer of the
+       * flush transaction, a value Yjs cannot store), and the error surfaces
+       * afterwards: a batch left pending would keep isUpdatePending set, and
+       * the observer would never queue another one.
+       */
+      try {
+        if (isOutboundPending) {
+          flushOutbound();
+        }
+      } finally {
+        applyInboundBatch();
+      }
     };
 
     /**
