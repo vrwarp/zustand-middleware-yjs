@@ -50,6 +50,69 @@ const isDangerousKey = (key: string | number): boolean =>
 const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
   { return typeof value === "object" && value !== null && !Array.isArray(value) };
 
+/**
+ * Whether `value` is a class instance (binary, a subdocument) rather than a
+ * record whose prototype a "__proto__" entry replaced. `instanceof` cannot
+ * tell: the injected prototype may itself be binary or a subdocument. Doc
+ * data holds no functions, so an injected prototype never has a
+ * `constructor` whose `prototype` points back at it.
+ */
+const isClassInstance = (value: object): boolean => {
+  const prototype = Object.getPrototypeOf(value) as { constructor?: { prototype?: unknown } } | null;
+
+  return prototype?.constructor?.prototype === prototype;
+};
+
+/**
+ * Whether doc JSON can enter store state as-is: every record, at any depth,
+ * has Object.prototype as its prototype and no dangerous key. Class
+ * instances are leaves.
+ */
+const isSafeDocJson = (json: unknown): boolean => {
+  if (Array.isArray(json)) {
+    return json.every((item) => isSafeDocJson(item));
+  }
+  if (!isPlainRecord(json)) {
+    return true;
+  }
+  if (Object.getPrototypeOf(json) !== Object.prototype) {
+    return isClassInstance(json);
+  }
+
+  return Object.keys(json).every((key) => !isDangerousKey(key) && isSafeDocJson(json[key]));
+};
+
+/**
+ * Returns doc JSON that is safe to put into store state.
+ *
+ * Y.Map#toJSON (like lib0's decoding of an object-valued ContentAny) assigns
+ * entries with `json[key] = value`, so a remote entry named "__proto__" sets
+ * the object's PROTOTYPE instead of adding an own property: Object.keys looks
+ * clean, but reads and `in` checks see the injected values, and the own-key
+ * inbound diff never removes them. Every doc read that feeds store state goes
+ * through here. Safe JSON (any honest peer's) comes back untouched; unsafe
+ * records are rebuilt from their own keys minus the dangerous ones.
+ */
+const sanitizeDocJson = (json: unknown): unknown => {
+  if (isSafeDocJson(json)) {
+    return json;
+  }
+  if (Array.isArray(json)) {
+    return json.map((item) => sanitizeDocJson(item));
+  }
+
+  const record = json as Record<string, unknown>;
+  const sanitized: Record<string, unknown> = {};
+
+  for (const key of Object.keys(record)) {
+    if (!isDangerousKey(key)) {
+      sanitized[key] = sanitizeDocJson(record[key]);
+    }
+  }
+
+  return sanitized;
+};
+
 /** Shallow-pick the listed keys (presence-preserving: `undefined` values survive). */
 const pickKeys = (
   source: Record<string, unknown>,
@@ -984,9 +1047,10 @@ export const computeInboundState = <T>(
   { syncedKeys, suppressTopLevelDeleteKeys }: InboundStateOptions = {}
 ): T => {
   const patchOptions: PatchStateOptions = { suppressTopLevelDeleteKeys };
+  const docJson = sanitizeDocJson(newState);
 
   if (syncedKeys === undefined) {
-    return patchState(currentState, newState as T, patchOptions);
+    return patchState(currentState, docJson as T, patchOptions);
   }
 
   // pickKeys is presence-preserving, but function-valued state keys are
@@ -1004,7 +1068,7 @@ export const computeInboundState = <T>(
     }
   }
 
-  const newSubset = isPlainRecord(newState) ? pickKeys(newState, syncedKeys) : {};
+  const newSubset = isPlainRecord(docJson) ? pickKeys(docJson, syncedKeys) : {};
   const patchedSubset = patchState(oldSubset, newSubset, patchOptions);
 
   /*
@@ -1085,7 +1149,7 @@ const readDocJsonAtPath = (dataMap: yjs.Map<unknown>, path: InboundPath): unknow
     }
   }
 
-  return node instanceof yjs.AbstractType ? node.toJSON() : node;
+  return sanitizeDocJson(node instanceof yjs.AbstractType ? node.toJSON() : node);
 };
 
 /** Reads the value at `path` in plain state, or `absent`. */
