@@ -395,7 +395,14 @@ const yjsImpl: YjsImpl = <S>(
     // applied to state.
     let isUpdatePending = false;
 
-    const originalSetState = api.setState;
+    /*
+     * The doc state an inbound patch is applying right now. A middleware
+     * nested inside yjs (immer, devtools) forwards it to the `set` below,
+     * which must not schedule it back out to the doc. Matching this exact
+     * object rather than raising a flag keeps the sets that subscribers make
+     * in reaction to the patch syncing.
+     */
+    let inboundState: unknown;
 
     const flushOutbound = () => {
       isOutboundPending = false;
@@ -496,7 +503,11 @@ const yjsImpl: YjsImpl = <S>(
        * optimistic UI / React responsiveness) then schedules a Yjs sync.
        */
       (partial, replace) => {
-        scheduleOutbound(get());
+        // Doc state forwarded here by a nested middleware is never echoed.
+        if (partial !== inboundState) {
+          scheduleOutbound(get());
+        }
+
         // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any
         set(partial as any, replace as any);
       },
@@ -548,6 +559,29 @@ const yjsImpl: YjsImpl = <S>(
       }
     }
 
+    /*
+     * Captured only now that config() has run: a middleware nested inside yjs
+     * (immer, persist, devtools) installs its own api.setState while it runs,
+     * and wrapping the one from before would silently bypass it.
+     */
+    const originalSetState = api.setState;
+
+    /**
+     * Applies doc state to the store through the full setState chain, so a
+     * nested middleware still sees it (persist stores remote changes), without
+     * scheduling an outbound echo.
+     */
+    const setInboundState: typeof api.setState = (state, replace) => {
+      inboundState = state;
+
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any
+        originalSetState(state as any, replace as any);
+      } finally {
+        inboundState = undefined;
+      }
+    };
+
     const creationDataMap = getDataMap();
 
     if (!isObsolete && creationDataMap !== undefined && creationDataMap.size > 0) {
@@ -559,7 +593,7 @@ const yjsImpl: YjsImpl = <S>(
           suppressTopLevelDeleteKeys: declaredDefaultKeys,
         }
       );
-      api.setState(initialState, true);
+      setInboundState(initialState, true);
       markHydrated(); // hydration source (a): synchronous initial patch
     }
 
@@ -659,7 +693,7 @@ const yjsImpl: YjsImpl = <S>(
 
       const storeForPatch = {
         ...api,
-        "setState": originalSetState,
+        "setState": setInboundState,
       };
 
       const dataMap = getDataMap();
@@ -701,7 +735,7 @@ const yjsImpl: YjsImpl = <S>(
           // key-scoped patch rather than dropping it.
           if (nextState !== undefined) {
             if (!Object.is(nextState, currentState)) {
-              originalSetState(nextState as never, true);
+              setInboundState(nextState as never, true);
             }
             markHydrated(); // hydration source (b): first applied inbound batch
 
