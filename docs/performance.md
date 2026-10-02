@@ -677,6 +677,44 @@ elements); now they are flat. Below ~200 elements per flush the old cost was a
 few milliseconds, so everyday edits were never affected — this was a cliff
 for bulk operations on primitive lists.
 
+### 17. `syncedKeys` stores serialized keys they never replicate
+
+A `syncedKeys` store ignores every other key in its map: a key removed from
+the whitelist that old documents still carry (the resurrection guard), keys
+another client version writes, or another store's keys when several stores
+are bound to one map. Every whole-map read still called `toJSON()` on the
+**entire** map and dropped the foreign keys with `pickKeys` only afterwards
+— creation hydration in both modes and, in legacy mode, the root read of
+every outbound flush and the re-read of every inbound batch (including
+batches that touch only foreign keys, such as another device's page turn).
+A tiny settings store next to a large tree paid for the whole tree each
+time.
+
+**Fix:** `pickMapJson` serializes only the listed keys, with exactly the
+result of `pickKeys(map.toJSON(), keys)`: presence-preserving, dangerous
+names skipped, ContentAny values passed through by reference. Every
+whole-map read of a `syncedKeys` store (and the DEV tripwire) uses it; the
+inbound sanitizer still runs on the result, now over the subset only. Stores
+without `syncedKeys` read the map exactly as before.
+
+Measured with `runSharedMapBench` (`bench/versicle.ts`): a `settings` store
+(`syncedKeys: ["settings"]`) on a map that also holds the progress tree.
+Before, every operation below serialized 6,073 / 24,283 / 72,843 Y types at
+10 / 40 / 120 books; after, 1 (the settings map itself) at every scale. At
+120 books:
+
+| scenario | before | after |
+|---|---:|---:|
+| cold hydration, legacy | 121.2 ms | 0.21 ms |
+| cold hydration, `scopedDiff` | 127.6 ms | 0.20 ms |
+| legacy settings flush | 83.9 ms | 0.03 ms |
+| legacy inbound settings change | 106.9 ms | 0.10 ms |
+| legacy inbound foreign-only batch | 104.0 ms | 0.09 ms |
+
+`scopedDiff` steady state was already O(own keys) and is unchanged. A legacy
+store still runs a (now cheap) inbound batch for foreign-only changes; the
+scopedDiff path skips those.
+
 ## Downstream-shaped aging scenario (one hot top-level key)
 
 `bench/versicle.ts` models the shape §9 and §10 were found in: a single
@@ -737,7 +775,9 @@ descended). It is reported as a column so that steady-state regressions stay
 distinguishable from this unavoidable startup cost. Reducing it would mean
 not materializing the whole tree at startup — a consumer-side decision (bind
 a narrower store, or split the domain across documents), not something the
-middleware can do on its own.
+middleware can do on its own. The floor covers only what the store
+replicates: a `syncedKeys` store does not materialize the keys it ignores
+(§17).
 
 ## Aged-document session (end-to-end)
 
@@ -807,7 +847,7 @@ run-to-run.)
 
 ## Regression coverage
 
-Eleven structural test suites lock the fixes in without flaky wall-clock
+Twelve structural test suites lock the fixes in without flaky wall-clock
 assertions:
 
 - `src/text-performance.spec.ts` — Y.Text run coalescing (item counts per
@@ -902,3 +942,11 @@ assertions:
   receiver, each store its own doc, and it must notify at most once. Plus a
   `toJSON` pin that a deep path under a key the batch deletes is dropped
   rather than escalating the whole batch.
+- `src/synced-keys-foreign-serialization.spec.ts` — the §17 fix: `toJSON`
+  spies proving a `syncedKeys` store never serializes a foreign key (cold
+  hydration in both modes; legacy flush, inbound and foreign-only inbound;
+  the DEV tripwire), Y-type counts no higher than on a map holding only the
+  store's own key and flat from n to 4n books, and fast-check properties
+  showing `pickMapJson` equals `pickKeys(map.toJSON())` directly, through
+  `computeInboundState`, and as the legacy outbound root read (byte-identical
+  updates).

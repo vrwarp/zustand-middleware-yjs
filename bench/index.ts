@@ -35,7 +35,7 @@ import { runInboundChildKeyBench } from "./inbound-child-keys";
 import { runInboundMixedBatchBench } from "./inbound-mixed-batch";
 import { formatRecordDeleteReport, runRecordDeleteBench } from "./record-delete";
 import { runStringDiffBench } from "./string-diffs";
-import { runInboundBulkBench, runVersicleBench } from "./versicle";
+import { runInboundBulkBench, runSharedMapBench, runVersicleBench } from "./versicle";
 import { runYArrayRunsBench } from "./yarray-runs";
 
 // Deterministic perf runs: disable the DEV-only sampled convergence check so
@@ -741,6 +741,13 @@ runRecordDeleteBench()
     console.error("  running inbound mixed-batch scenario...");
 
     return runInboundMixedBatchBench();
+  })
+  .then((report) => {
+    // eslint-disable-next-line no-console
+    console.log(`\n${report}`);
+    console.error("  running shared-map (syncedKeys) scenario...");
+
+    return runSharedMapBench();
   })
   .then((report) => {
     // eslint-disable-next-line no-console

@@ -28,7 +28,7 @@ import { performance } from "node:perf_hooks";
 import * as yjs from "yjs";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import yjsMiddleware, { __scopedDiffDevSampling, getYjsStoreHandle } from "../src";
-import { computeInboundStateForPaths, type InboundPath, minimizeInboundPaths } from "../src/patching";
+import { computeInboundStateForPaths, type InboundPath, minimizeInboundPaths, patchSharedType } from "../src/patching";
 import { bench } from "./harness";
 
 export interface ReadingSession {
@@ -705,5 +705,327 @@ export const runInboundBulkBench = async (): Promise<string> => {
     ...widthRows.map((row) => {
       return `| ${String(row.changed)} | ${row.medianMs.toFixed(2)} | ${(row.medianMs / baseMs).toFixed(1)}x |`;
     }),
+  ].join("\n");
+};
+
+/*
+ * Shared-map scenario: a tiny store next to the progress tree.
+ *
+ * `syncedKeys` lets several stores share ONE Y.Map with disjoint key sets
+ * (and lets a store ignore a deprecated key that old documents still carry).
+ * Here a small `settings` store (syncedKeys ['settings']) is bound to the
+ * same map that holds the whole `progress` tree. Its own data is a handful of
+ * scalars, so every operation on it should cost O(settings) — yet whole-map
+ * reads (creation hydration, the legacy flush's root `toJSON()`, the legacy
+ * inbound re-read) serialize the foreign `progress` tree first and only then
+ * discard it with pickKeys.
+ *
+ * Measured per library scale (0 books = a map holding only `settings`, the
+ * O(own data) reference) and per diff mode:
+ * - Y types serialized (`Y.Map`/`Y.Array` `toJSON` calls, deterministic) and
+ *   median wall time of: cold hydration, an outbound settings flush, an
+ *   inbound settings change, and an inbound FOREIGN change (another device's
+ *   page turn, which touches no key this store syncs).
+ */
+
+interface Settings {
+  theme: string;
+  fontFamily: string;
+  fontSize: number;
+  lineHeight: number;
+}
+
+interface SettingsState {
+  settings: Settings;
+  setFontSize: (fontSize: number) => void;
+}
+
+const SHARED_MAP = "versicle";
+
+const initialSettings: Settings = {
+  "theme": "sepia",
+  "fontFamily": "serif",
+  "fontSize": 18,
+  "lineHeight": 1.5,
+};
+
+const makeSettingsStore = (doc: yjs.Doc, isScopedDiff: boolean): StoreApi<SettingsState> => {
+  return createStore<SettingsState>()(
+    yjsMiddleware(
+      doc,
+      SHARED_MAP,
+      (set) => {
+        return {
+          "settings": initialSettings,
+          "setFontSize": (fontSize: number) => {
+            set((state) => ({ "settings": { ...state.settings, fontSize } }));
+          },
+        };
+      },
+      {
+        "disableYText": true,
+        "scopedDiff": isScopedDiff,
+        "syncedKeys": ["settings"],
+      }
+    )
+  );
+};
+
+/**
+ * Runs `fn` with Y.Map/Y.Array `toJSON` wrapped by a counter (nested calls
+ * included: a parent's toJSON recurses through the children's prototypes).
+ *
+ * @param fn - The work to count; may be async.
+ * @returns A promise for the number of Y types serialized during `fn`.
+ */
+const countSerializedTypes = async (fn: () => unknown): Promise<number> => {
+  const mapPrototype = yjs.Map.prototype as { toJSON: () => unknown };
+  const arrayPrototype = yjs.Array.prototype as { toJSON: () => unknown };
+  const originalMapToJson = mapPrototype.toJSON;
+  const originalArrayToJson = arrayPrototype.toJSON;
+  let calls = 0;
+
+  mapPrototype.toJSON = function countedMapToJson(this: unknown) {
+    calls = calls + 1;
+
+    return originalMapToJson.call(this);
+  };
+  arrayPrototype.toJSON = function countedArrayToJson(this: unknown) {
+    calls = calls + 1;
+
+    return originalArrayToJson.call(this);
+  };
+
+  try {
+    await fn();
+  } finally {
+    mapPrototype.toJSON = originalMapToJson;
+    arrayPrototype.toJSON = originalArrayToJson;
+  }
+
+  return calls;
+};
+
+export interface SharedMapRow {
+  books: number;
+  mode: string;
+  hydrationTypes: number;
+  hydrationMs: number;
+  flushTypes: number;
+  flushMs: number;
+  inboundOwnTypes: number;
+  inboundOwnMs: number;
+  inboundForeignTypes: number;
+  inboundForeignMs: number;
+}
+
+/**
+ * Measures the settings store at one library scale and diff mode.
+ *
+ * @param books - Books in the foreign progress tree (0 = settings only).
+ * @param isScopedDiff - Diff mode of the measured settings store.
+ * @param samples - Timed samples per operation (median reported).
+ * @returns A promise for the measured row.
+ */
+export const runSharedMapScale = async (
+  books: number,
+  isScopedDiff: boolean,
+  samples: number
+): Promise<SharedMapRow> => {
+  __scopedDiffDevSampling.rate = 0;
+
+  // The populated document every client starts from: the progress tree
+  // (written in the middleware's own layout) next to the settings.
+  const sourceDoc = new yjs.Doc();
+
+  sourceDoc.transact(() => {
+    patchSharedType(
+      sourceDoc.getMap(SHARED_MAP),
+      books === 0
+        ? { "settings": initialSettings }
+        : { "progress": makeProgressTree(books, 300), "settings": initialSettings },
+      { "disableYText": true }
+    );
+  });
+
+  const snapshot = yjs.encodeStateAsUpdate(sourceDoc);
+  const loadDoc = (): yjs.Doc => {
+    const loaded = new yjs.Doc();
+
+    yjs.applyUpdate(loaded, snapshot);
+
+    return loaded;
+  };
+
+  // --- Cold hydration: attach the settings store to the populated doc ---
+  const hydrationTypes = await countSerializedTypes(() => makeSettingsStore(loadDoc(), isScopedDiff));
+  const hydrationSamples: number[] = [];
+
+  for (let index = 0; index < samples; index = index + 1) {
+    const coldDoc = loadDoc();
+    const start = performance.now();
+    const coldStore = makeSettingsStore(coldDoc, isScopedDiff);
+
+    hydrationSamples.push(performance.now() - start);
+
+    if (coldStore.getState().settings.theme !== "sepia" || Object.hasOwn(coldStore.getState(), "progress")) {
+      throw new Error("hydration produced the wrong state");
+    }
+  }
+
+  // --- Steady state: one measured client and one peer ---
+  const doc = loadDoc();
+  const peerDoc = loadDoc();
+  const store = makeSettingsStore(doc, isScopedDiff);
+  const handle = getYjsStoreHandle(store);
+  let fontSize = 20;
+
+  const flushOnce = (): void => {
+    store.getState().setFontSize(fontSize);
+    fontSize = fontSize + 1;
+    handle.flush();
+  };
+
+  // Outbound: one settings write, flushed synchronously.
+  const flushTypes = await countSerializedTypes(flushOnce);
+  const flushSamples: number[] = [];
+
+  for (let index = 0; index < samples; index = index + 1) {
+    store.getState().setFontSize(fontSize);
+    fontSize = fontSize + 1;
+
+    const start = performance.now();
+
+    handle.flush();
+    flushSamples.push(performance.now() - start);
+  }
+
+  flushOnce();
+  yjs.applyUpdate(peerDoc, yjs.encodeStateAsUpdate(doc, yjs.encodeStateVector(peerDoc)));
+
+  const peerMap = peerDoc.getMap(SHARED_MAP);
+  let peerValue = 0;
+
+  /**
+   * One remote transaction from the peer, applied to the measured doc; the
+   * store patch is microtask-batched, so the work happens on the drain.
+   */
+  const receive = async (write: () => void): Promise<void> => {
+    const stateVector = yjs.encodeStateVector(doc);
+
+    peerDoc.transact(write);
+    yjs.applyUpdate(doc, yjs.encodeStateAsUpdate(peerDoc, stateVector));
+    await Promise.resolve();
+  };
+  const writeOwn = (): void => {
+    peerValue = peerValue + 1;
+    (peerMap.get("settings") as yjs.Map<unknown>).set("lineHeight", 1 + (peerValue / 1000));
+  };
+  const writeForeign = (): void => {
+    peerValue = peerValue + 1;
+
+    if (books === 0) {
+      peerMap.set("progress", peerValue);
+
+      return;
+    }
+
+    const bookId = `book-${String(peerValue % books)}`;
+    const progress = peerMap.get("progress") as yjs.Map<yjs.Map<yjs.Map<unknown>>>;
+
+    progress.get(bookId)?.get("device-1")?.set("percentage", peerValue / 1_000_000);
+  };
+
+  const timeReceive = async (write: () => void): Promise<{ types: number; ms: number }> => {
+    const types = await countSerializedTypes(() => receive(write));
+    const timings: number[] = [];
+
+    for (let index = 0; index < samples; index = index + 1) {
+      const stateVector = yjs.encodeStateVector(doc);
+
+      peerDoc.transact(write);
+      yjs.applyUpdate(doc, yjs.encodeStateAsUpdate(peerDoc, stateVector));
+
+      const start = performance.now();
+
+      await Promise.resolve();
+      timings.push(performance.now() - start);
+    }
+
+    return { types, "ms": median(timings) };
+  };
+
+  const inboundOwn = await timeReceive(writeOwn);
+
+  if (store.getState().settings.lineHeight !== 1 + (peerValue / 1000)) {
+    throw new Error("inbound settings change did not reach the store");
+  }
+
+  const inboundForeign = await timeReceive(writeForeign);
+
+  if (Object.hasOwn(store.getState(), "progress")) {
+    throw new Error("a foreign key leaked into the settings store");
+  }
+
+  return {
+    books,
+    "mode": isScopedDiff ? "scopedDiff" : "legacy",
+    hydrationTypes,
+    "hydrationMs": median(hydrationSamples),
+    flushTypes,
+    "flushMs": median(flushSamples),
+    "inboundOwnTypes": inboundOwn.types,
+    "inboundOwnMs": inboundOwn.ms,
+    "inboundForeignTypes": inboundForeign.types,
+    "inboundForeignMs": inboundForeign.ms,
+  };
+};
+
+export interface SharedMapBenchOptions {
+  /** Library sizes to measure (0 = settings-only reference). */
+  scales?: readonly number[];
+  /** Timed samples per operation (median reported). */
+  samples?: number;
+}
+
+/**
+ * Runs the shared-map scenario across library scales and both diff modes.
+ *
+ * @param options - Optional overrides (see SharedMapBenchOptions).
+ * @returns A promise for the report as a markdown string.
+ */
+export const runSharedMapBench = async (
+  { scales = [0, 10, 40, 120], samples = 7 }: SharedMapBenchOptions = {}
+): Promise<string> => {
+  const rows: SharedMapRow[] = [];
+
+  for (const isScopedDiff of [false, true]) {
+    for (const books of scales) {
+      console.error(`  running shared-map scale: ${String(books)} books, ${isScopedDiff ? "scopedDiff" : "legacy"}...`);
+
+      rows.push(await runSharedMapScale(books, isScopedDiff, samples));
+    }
+  }
+
+  const header =
+    "| mode | books | hydration: types | hydration (ms) | settings flush: types | settings flush (ms) | " +
+    "inbound settings: types | inbound settings (ms) | inbound foreign: types | inbound foreign (ms) |";
+  const divider = "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|";
+  const lines = rows.map((row) => {
+    return `| ${row.mode} | ${String(row.books)} | ${String(row.hydrationTypes)} | ${row.hydrationMs.toFixed(3)} | ` +
+      `${String(row.flushTypes)} | ${row.flushMs.toFixed(3)} | ` +
+      `${String(row.inboundOwnTypes)} | ${row.inboundOwnMs.toFixed(3)} | ` +
+      `${String(row.inboundForeignTypes)} | ${row.inboundForeignMs.toFixed(3)} |`;
+  });
+
+  return [
+    "## Shared map: tiny `settings` store (syncedKeys) next to the progress tree",
+    "",
+    "types = Y.Map/Y.Array toJSON calls (deterministic); times are medians.",
+    "0 books = a map holding only `settings` (the O(own data) reference).",
+    "",
+    header,
+    divider,
+    ...lines,
   ].join("\n");
 };

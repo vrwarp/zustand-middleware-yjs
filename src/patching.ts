@@ -170,6 +170,33 @@ const pickKeys = (
 };
 
 /**
+ * `pickKeys(map.toJSON(), keys)` without serializing the map's other keys: a
+ * key outside the whitelist (a deprecated one an old document still carries,
+ * another client version's, another store's) can hold a large tree that the
+ * caller would discard anyway. Presence-preserving like pickKeys; ContentAny
+ * values pass through as-is.
+ */
+export const pickMapJson = (
+  map: yjs.Map<unknown>,
+  keys: ReadonlySet<string>
+): Record<string, unknown> => {
+  const picked: Record<string, unknown> = {};
+
+  for (const key of keys) {
+    if (isDangerousKey(key)) {
+      continue;
+    }
+    if (map.has(key)) {
+      const value = map.get(key);
+
+      picked[key] = value instanceof yjs.AbstractType ? value.toJSON() : value;
+    }
+  }
+
+  return picked;
+};
+
+/**
  *
  * The text diff emits one change per character: consecutive inserts arrive
  * with contiguous indices (i, i+1, ...) and consecutive deletes of adjacent
@@ -660,6 +687,9 @@ export const patchSharedType = (
 
   if (precomputedJson !== undefined) {
     sharedTypeJson = precomputedJson.value;
+  } else if (syncedKeys !== undefined && sharedType instanceof yjs.Map && isPlainRecord(newState)) {
+    // The whitelist below keeps only these keys: serialize nothing else.
+    sharedTypeJson = pickMapJson(sharedType, syncedKeys);
   } else if (typeof (sharedType as yjs.Map<unknown>).toJSON === "function") {
     sharedTypeJson = (sharedType as yjs.Map<unknown>).toJSON();
   } else {
@@ -988,8 +1018,6 @@ export const assertScopedDiffConvergence = (
   state: unknown,
   { syncedKeys }: ScopedDiffConvergenceOptions = {}
 ): void => {
-  const mapJson = sharedType.toJSON();
-
   const stateRecord: Record<string, unknown> = {};
 
   if (isPlainRecord(state)) {
@@ -1000,7 +1028,7 @@ export const assertScopedDiffConvergence = (
     }
   }
 
-  const a = syncedKeys ? pickKeys(mapJson as Record<string, unknown>, syncedKeys) : mapJson;
+  const a = syncedKeys ? pickMapJson(sharedType, syncedKeys) : sharedType.toJSON();
   const b = syncedKeys ? pickKeys(stateRecord, syncedKeys) : stateRecord;
 
   const residual = getChanges(

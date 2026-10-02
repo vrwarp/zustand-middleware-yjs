@@ -13,6 +13,7 @@ import {
   patchSharedType,
   patchSharedTypeScoped,
   patchStore,
+  pickMapJson,
   truncateAtArrayIndex,
 } from "./patching";
 
@@ -319,6 +320,14 @@ const yjsImpl: YjsImpl = <S>(
         : [...syncedKeys, "__schemaVersion"]
     )
     : undefined;
+
+  /**
+   * The JSON of every key this store replicates in a whole-map read. With
+   * syncedKeys only those keys are serialized: a foreign key's tree would be
+   * discarded by the inbound whitelist anyway.
+   */
+  const readReplicatedJson = (dataMap: yjs.Map<unknown>): Record<string, unknown> =>
+    { return syncedKeySet ? pickMapJson(dataMap, syncedKeySet) : dataMap.toJSON() };
 
   // Permanent kill switch: once set, no further inbound or outbound sync occurs.
   let isObsolete = false;
@@ -643,7 +652,7 @@ const yjsImpl: YjsImpl = <S>(
     if (!isObsolete && creationDataMap !== undefined && creationDataMap.size > 0) {
       initialState = computeInboundState(
         initialState,
-        creationDataMap.toJSON(),
+        readReplicatedJson(creationDataMap),
         {
           syncedKeys: syncedKeySet,
           suppressTopLevelDeleteKeys: declaredDefaultKeys,
@@ -725,25 +734,15 @@ const yjsImpl: YjsImpl = <S>(
 
     /**
      * The JSON of the given top-level keys of the data map, for a
-     * key-scoped patch. A key the map lacks is left out, so the patch
-     * deletes it from state (unless merge-defaults retains it).
+     * key-scoped patch (only those keys are serialized). A key the map lacks
+     * is left out, so the patch deletes it from state (unless merge-defaults
+     * retains it).
      */
     const readKeysJson = (
       dataMap: yjs.Map<unknown> | undefined,
       keys: ReadonlySet<string>
-    ): Record<string, unknown> => {
-      const json: Record<string, unknown> = {};
-
-      for (const key of keys) {
-        if (dataMap?.has(key)) {
-          const value = dataMap.get(key);
-
-          json[key] = value instanceof yjs.AbstractType ? value.toJSON() : value;
-        }
-      }
-
-      return json;
-    };
+    ): Record<string, unknown> =>
+      { return dataMap === undefined ? {} : pickMapJson(dataMap, keys) };
 
     const processBatch = () => {
       /*
@@ -863,7 +862,7 @@ const yjsImpl: YjsImpl = <S>(
 
       patchStore(
         storeForPatch,
-        dataMap === undefined ? {} : dataMap.toJSON(),
+        dataMap === undefined ? {} : readReplicatedJson(dataMap),
         {
           syncedKeys: syncedKeySet,
           suppressTopLevelDeleteKeys: declaredDefaultKeys,
