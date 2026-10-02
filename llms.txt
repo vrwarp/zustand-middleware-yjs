@@ -119,6 +119,7 @@ The middleware also attaches a per-store handle (`api.yjs`, modeled on
 interface YjsStoreHandle {
   hasHydrated(): boolean;          // true once the first patch from the doc applied
   whenHydrated(): Promise<void>;   // resolves strictly after the hydrating setState
+                                   // (or after a first patch that changed nothing)
   markHydrated(): void;            // mark hydrated when the doc is synced but empty
   flush(): void;                   // drain the pending outbound batch synchronously
   isObsolete(): boolean;           // true once the schema-version poison pill fired

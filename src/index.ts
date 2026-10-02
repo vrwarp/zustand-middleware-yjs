@@ -411,8 +411,9 @@ const yjsImpl: YjsImpl = <S>(
      * store creation;
      * (b) the first applied inbound processBatch;
      * (c) api.yjs.markHydrated() (provider: doc synced + map empty).
-     * The resolve call always happens AFTER the corresponding setState returns,
-     * so an awaiting caller observes hydrated state.
+     * The resolve call always happens AFTER the corresponding setState returns
+     * (a batch that changed nothing skips setState but still resolves), so an
+     * awaiting caller observes hydrated state.
      */
     let isHydrated = false;
     let resolveHydrated!: () => void;

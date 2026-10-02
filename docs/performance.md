@@ -999,6 +999,47 @@ rows read the same as before, since their changes sit in an array or at
 depth 1. `scopedDiff` page turns are unaffected, since they already descend
 to the changed leaf.
 
+### 21. No-op inbound batches notified every subscriber
+
+A foreign transaction can change nothing for a store: another device wrote
+the value this store already holds, another store bound to the same map
+wrote a key outside this store's `syncedKeys`, or an identical nested value
+was rewritten. The inbound patch still handed zustand a new top-level state
+object, because `patchStore` cloned the state before diffing it and the
+`syncedKeys` branch of `computeInboundState` always built a fresh object. So
+every listener and selector ran, and a `persist` or `devtools` middleware
+(nested inside yjs or wrapped around it) ran again; `persist` re-serialized
+and re-wrote the whole state. The deep-path route (§11) already skipped
+`setState` when nothing changed. The key-scoped route and the legacy full
+route did not.
+
+**Fix:** `computeInboundState` returns its input itself when the diff is
+empty, and `patchStore` reads `store.getState()` uncloned and calls
+`setState` only when the result is a different object. Dropping the clone is
+safe because every state applier copies what it changes; a spec runs the
+inbound patch on deep-frozen state to keep it that way. Hydration still
+resolves after a first batch that changed nothing.
+
+Per no-op batch, 500-book library, persist inside yjs plus 20 selector
+subscribers (`bench/noop-inbound.ts`; counters are deterministic, timings
+are medians of 7 interleaved runs):
+
+| shape | before | after |
+|---|---:|---:|
+| legacy: identical value, key outside `syncedKeys`, identical deep value | 1 notify, 20 selector runs, 1 persist write (76,338 B) | 0 |
+| `scopedDiff`: identical shallow value | 1 notify, 20 selector runs, 1 persist write (76,338 B) | 0 |
+| `scopedDiff`: identical shallow value, patch time | 0.363 ms | 0.007 ms |
+| four legacy stores sharing one map, per write of one store | 3 notifies, 3 persist writes (114,183 B) | 0 |
+
+The persist write is O(state): 18,959 B at 125 books, 76,338 B at 500. A
+changed value still notifies once and still reaches persist. In legacy mode
+the saving sits on top of the full-map read that mode always does and is
+within timing noise. Severity is low: a spurious notify without persist or
+devtools costs microseconds (slices keep their identity, so React does not
+re-render), and a `scopedDiff` store with `syncedKeys` already skipped two
+of the three shapes. It matters mainly for stores wrapped in persist or
+devtools, and for several legacy-mode stores partitioning one map.
+
 ## Downstream-shaped aging scenario (one hot top-level key)
 
 `bench/versicle.ts` models the shape §9 and §10 were found in: a single
@@ -1141,7 +1182,7 @@ run-to-run.)
 
 ## Regression coverage
 
-Sixteen structural test suites lock the fixes in without flaky wall-clock
+Seventeen structural test suites lock the fixes in without flaky wall-clock
 assertions:
 
 - `src/text-performance.spec.ts` — Y.Text run coalescing (item counts per
@@ -1287,3 +1328,12 @@ assertions:
   The fast-check properties in `src/diff.spec.ts` back the equivalence the
   fix relies on: `isDeepEqualForDiff` agrees with an empty `getChanges`, and
   record diffs match the old prefiltered output.
+- `src/noop-inbound-notify.spec.ts` — the §21 fix: listener calls, state
+  identity and persist writes per no-op inbound batch (identical value with
+  and without `syncedKeys`, key outside `syncedKeys`, identical deep value,
+  20 subscribers across 10 batches, persist nested inside yjs and wrapped
+  around it, several legacy stores sharing one map) in both modes, with a
+  changed-value control; `whenHydrated` after a first batch that changed
+  nothing; and a fast-check property running `patchStore` on deep-frozen
+  state, which pins that the inbound patch never writes to the state it
+  reads and keeps its identity exactly when nothing replicated changed.

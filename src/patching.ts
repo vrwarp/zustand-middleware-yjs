@@ -1482,10 +1482,14 @@ export interface InboundStateOptions {
  * universe is restricted to the whitelist; deletes are still honored INSIDE
  * the subset.
  *
- * @param currentState - The current (already cloned) Zustand state.
+ * Never mutates `currentState`: every applier copies what it changes, which
+ * is what lets patchStore pass `store.getState()` in uncloned.
+ *
+ * @param currentState - The current Zustand state.
  * @param newState - The Y.Map JSON to patch toward.
  * @param options - Inbound options (whitelist, default-key retention).
- * @returns The next state object to set with replace=true.
+ * @returns The next state object to set with replace=true, or
+ * `currentState` itself when nothing changed.
  */
 export const computeInboundState = <T>(
   currentState: T,
@@ -1521,6 +1525,12 @@ export const computeInboundState = <T>(
   const newSubset = isPlainRecord(docJson) ? pickKeys(docJson, replicatedKeys) : {};
   const patchedSubset = patchState(oldSubset, newSubset, patchOptions);
 
+  // Empty diff: hand back the input itself, so the caller can skip setState
+  // (a fresh object would notify every subscriber for nothing).
+  if (patchedSubset === oldSubset) {
+    return currentState;
+  }
+
   /*
    * Apply the patched subset over the full state: keys deleted within the
    * subset are absent from patchedSubset and must be removed; everything
@@ -1543,6 +1553,7 @@ export const computeInboundState = <T>(
 /**
  * Diffs the current state stored in the Zustand store and the given newState.
  * The current Zustand state is patched into the given new state recursively.
+ * When that changes nothing, setState is not called at all.
  *
  * @param store - The Zustand API that manages the store we want to patch.
  * @param newState - The new state that the Zustand store should be patched to.
@@ -1553,15 +1564,23 @@ export const patchStore = <S>(
   newState: unknown,
   { syncedKeys, suppressTopLevelDeleteKeys, jsonElementKeys }: InboundStateOptions = {}
 ): void => {
-  // Clone the oldState instead of using it directly from store.getState().
-  const oldState = {
-    ...(store.getState() as Record<string, unknown>),
-  };
+  /*
+   * Not cloned: computeInboundState never mutates its input, and returns it
+   * as is when nothing changed. A batch that changes nothing for this store
+   * (an identical value, a key outside syncedKeys) then keeps the state
+   * object, instead of notifying every subscriber and re-running nested
+   * middlewares (persist, devtools) with an equal copy.
+   */
+  const oldState = store.getState();
+  const nextState = computeInboundState(oldState, newState, {
+    syncedKeys,
+    suppressTopLevelDeleteKeys,
+    jsonElementKeys,
+  });
 
-  store.setState(
-    computeInboundState(oldState, newState, { syncedKeys, suppressTopLevelDeleteKeys, jsonElementKeys }) as S,
-    true // Replace with the patched state.
-  );
+  if (!Object.is(nextState, oldState)) {
+    store.setState(nextState, true); // Replace with the patched state.
+  }
 };
 
 /** A store-relative path to a changed node: top-level key, then descendants. */

@@ -40,6 +40,7 @@ import { runInboundCatchUpBench } from "./inbound-catchup";
 import { runInboundChildKeyBench } from "./inbound-child-keys";
 import { runInboundMixedBatchBench } from "./inbound-mixed-batch";
 import { runNestedListsBench } from "./nested-lists";
+import { runNoopInboundBench } from "./noop-inbound";
 import { formatRecordDeleteReport, runRecordDeleteBench } from "./record-delete";
 import { runRecordDiffBench } from "./record-diff";
 import { runStringDiffBench } from "./string-diffs";
@@ -782,6 +783,13 @@ runRecordDeleteBench()
     console.error("  running shared-map (syncedKeys) scenario...");
 
     return runSharedMapBench();
+  })
+  .then((report) => {
+    // eslint-disable-next-line no-console
+    console.log(`\n${report}`);
+    console.error("  running no-op inbound scenarios...");
+
+    return runNoopInboundBench();
   })
   .then((report) => {
     // eslint-disable-next-line no-console

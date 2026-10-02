@@ -282,7 +282,9 @@ handle.isObsolete();              // true once the schema-version poison pill fi
 ```
 
 `whenHydrated()` resolves strictly after the hydrating `setState`, so an
-awaiting caller always observes hydrated state. `markHydrated()` exists for the
+awaiting caller always observes hydrated state. A first patch that changes
+nothing (the doc holds exactly the store's state) skips `setState` and
+notifies no subscriber, but still resolves it. `markHydrated()` exists for the
 case the middleware cannot detect on its own — the document is synced but this
 store's map is legitimately empty; it is idempotent and safe to call after real
 hydration.
