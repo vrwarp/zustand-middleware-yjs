@@ -704,19 +704,46 @@ const yjsImpl: YjsImpl = <S>(
     let hasPendingInboundFull = false;
 
     /*
-     * Full store-relative paths of the changed nodes in this batch, when
-     * every event in it named one below a top-level key. Yjs already tells
-     * us exactly which branch changed; keeping the whole path lets the patch
-     * reconcile that branch instead of re-reading the entire top-level key.
-     * A Y.Map event also names the keys it added, replaced or removed, and
-     * each becomes a key path of its own, so adding a book or an annotation
-     * reads the added value rather than the map it went into. The batch
-     * falls back to the key-scoped path as soon as any event names a
-     * top-level key directly.
+     * Full store-relative paths of the changed nodes in this batch that sit
+     * at least two segments deep. Yjs already tells us exactly which branch
+     * changed; keeping the whole path lets the patch reconcile that branch
+     * instead of re-reading the entire top-level key. A Y.Map event also
+     * names the keys it added, replaced or removed, and each becomes a key
+     * path of its own (`pendingInboundKeyPaths`), so adding a book or an
+     * annotation reads the added value rather than the map it went into.
      */
     let pendingInboundPaths: InboundPath[] | undefined;
     let pendingInboundKeyPaths: InboundPath[] | undefined;
-    let hasShallowInboundEvent = false;
+    /*
+     * The top-level keys this batch changed at the top level (added,
+     * replaced or deleted, or an edit inside a top-level array) or wrote
+     * alongside this store's own flush. Only these keys are re-read whole;
+     * top-level keys reconcile independently, so the deep paths under every
+     * other key keep the path-scoped route.
+     */
+    let pendingShallowKeys: Set<string> | undefined;
+
+    /**
+     * The JSON of the given top-level keys of the data map, for a
+     * key-scoped patch. A key the map lacks is left out, so the patch
+     * deletes it from state (unless merge-defaults retains it).
+     */
+    const readKeysJson = (
+      dataMap: yjs.Map<unknown> | undefined,
+      keys: ReadonlySet<string>
+    ): Record<string, unknown> => {
+      const json: Record<string, unknown> = {};
+
+      for (const key of keys) {
+        if (dataMap?.has(key)) {
+          const value = dataMap.get(key);
+
+          json[key] = value instanceof yjs.AbstractType ? value.toJSON() : value;
+        }
+      }
+
+      return json;
+    };
 
     const processBatch = () => {
       /*
@@ -734,16 +761,16 @@ const yjsImpl: YjsImpl = <S>(
 
       /*
        * Take this batch's deep-path accumulators up front so every exit below
-       * leaves a clean slate: a leftover shallow flag would keep forcing the
+       * leaves a clean slate: a leftover shallow key would keep forcing the
        * slow route on later batches that do not need it.
        */
-      const deepPaths = pendingInboundPaths;
-      const keyPaths = pendingInboundKeyPaths;
-      const hasShallowEvent = hasShallowInboundEvent;
+      const deepPaths = pendingInboundPaths ?? [];
+      const keyPaths = pendingInboundKeyPaths ?? [];
+      const shallowKeys = pendingShallowKeys ?? new Set<string>();
 
       pendingInboundPaths = undefined;
       pendingInboundKeyPaths = undefined;
-      hasShallowInboundEvent = false;
+      pendingShallowKeys = undefined;
 
       // A later transaction in this batch may have fired the poison pill: the
       // doc now holds newer-schema data the legacy store must never absorb.
@@ -782,22 +809,37 @@ const yjsImpl: YjsImpl = <S>(
         }
 
         /*
-         * Deep-path fast route: every event in this batch named a branch or
-         * map keys below a top-level key, so only those need reconciling.
-         * Avoids serializing and diffing the whole top-level value, which is
-         * O(total state) per inbound batch.
+         * Deep-path fast route: a branch named at least two segments below
+         * the store root, and a map key changed below a top-level key, are
+         * reconciled on their own, and only the shallow keys are re-read
+         * whole. Avoids serializing and diffing a whole top-level value that
+         * only had a deep change, which is O(total state) per inbound batch
+         * — also when a small top-level field was written in the same batch.
          */
-        if (!hasShallowEvent && deepPaths !== undefined && dataMap !== undefined) {
+        if (dataMap !== undefined) {
           const currentState = storeForPatch.getState() as Record<string, unknown>;
-          const nextState = computeInboundStateForPaths(currentState, dataMap, deepPaths, {
-            keyPaths,
+          /** A key re-read whole below already covers every branch under it. */
+          const isUnderDeepKey = (path: InboundPath): boolean =>
+            { return !shallowKeys.has(String(path[0])) };
+          const branchPaths = deepPaths.filter(isUnderDeepKey);
+          const branchState = computeInboundStateForPaths(currentState, dataMap, branchPaths, {
+            keyPaths: keyPaths.filter(isUnderDeepKey),
             syncedKeys: affectedKeys,
           });
 
           // `undefined` = a named branch is missing on one side, so the
           // change is only visible above these paths: fall through to the
-          // key-scoped patch rather than dropping it.
-          if (nextState !== undefined) {
+          // key-scoped patch of every affected key rather than dropping it.
+          if (branchState !== undefined) {
+            const shallowAffectedKeys = new Set([...shallowKeys].filter((key) => affectedKeys.has(key)));
+            // Patched on top of the branches, so the batch is one setState.
+            const nextState = shallowAffectedKeys.size === 0
+              ? branchState
+              : computeInboundState(branchState, readKeysJson(dataMap, shallowAffectedKeys), {
+                syncedKeys: shallowAffectedKeys,
+                suppressTopLevelDeleteKeys: declaredDefaultKeys,
+              });
+
             if (!Object.is(nextState, currentState)) {
               setInboundState(nextState as never, true);
             }
@@ -807,17 +849,7 @@ const yjsImpl: YjsImpl = <S>(
           }
         }
 
-        const partialMapJson: Record<string, unknown> = {};
-
-        for (const key of affectedKeys) {
-          if (dataMap?.has(key)) {
-            const value = dataMap.get(key);
-
-            partialMapJson[key] = value instanceof yjs.AbstractType ? value.toJSON() : value;
-          }
-        }
-
-        patchStore(storeForPatch, partialMapJson, {
+        patchStore(storeForPatch, readKeysJson(dataMap, affectedKeys), {
           syncedKeys: affectedKeys,
           suppressTopLevelDeleteKeys: declaredDefaultKeys,
         });
@@ -960,13 +992,14 @@ const yjsImpl: YjsImpl = <S>(
 
       if (scopedDiff && foreignKeys !== undefined) {
         // Only the caller's writes are inbound: the store already holds what
-        // it flushed itself.
+        // it flushed itself. They are re-read whole.
         pendingInboundKeys = pendingInboundKeys ?? new Set<string>();
+        pendingShallowKeys = pendingShallowKeys ?? new Set<string>();
 
         for (const key of foreignKeys) {
           pendingInboundKeys.add(key);
+          pendingShallowKeys.add(key);
         }
-        hasShallowInboundEvent = true;
       } else if (scopedDiff) {
         // Scoped inbound: collect the affected top-level keys across the
         // microtask batch. Key positions shift by one level under `scope`.
@@ -975,9 +1008,11 @@ const yjsImpl: YjsImpl = <S>(
 
         pendingInboundPaths = pendingInboundPaths ?? [];
         pendingInboundKeyPaths = pendingInboundKeyPaths ?? [];
+        pendingShallowKeys = pendingShallowKeys ?? new Set<string>();
 
         const paths = pendingInboundPaths;
         const keyPaths = pendingInboundKeyPaths;
+        const shallowKeys = pendingShallowKeys;
 
         /**
          * Records what an event below the store root changed. A Y.Map
@@ -988,7 +1023,7 @@ const yjsImpl: YjsImpl = <S>(
          * key). Any other event names the branch at its path, cut at the
          * first array index, which may be miscounted or stale by the time
          * the batch runs (see truncateAtArrayIndex); a branch under two
-         * segments still needs the key-scoped route.
+         * segments makes its top-level key shallow, re-read whole.
          */
         const collectBranchEvent = (
           event: yjs.YEvent<yjs.AbstractType<unknown>>,
@@ -1005,7 +1040,7 @@ const yjsImpl: YjsImpl = <S>(
           } else if (path.length >= 2) {
             paths.push([...path]);
           } else {
-            hasShallowInboundEvent = true;
+            shallowKeys.add(String(storePath[0]));
           }
         };
 
@@ -1013,8 +1048,8 @@ const yjsImpl: YjsImpl = <S>(
          * `event.path` is relative to the ROOT map, so under `scope` the
          * store-relative path is the tail after the scope segment. An event
          * on the store root itself (a top-level key added, replaced or
-         * deleted) still needs the key-scoped route, which reconciles that
-         * whole key and applies the merge-defaults delete suppression.
+         * deleted) makes that key shallow: the key-scoped patch reconciles
+         * that whole key and applies the merge-defaults delete suppression.
          */
         for (const event of events) {
           if (scopeKey === undefined) {
@@ -1023,8 +1058,8 @@ const yjsImpl: YjsImpl = <S>(
             } else {
               for (const key of event.changes.keys.keys()) {
                 keys.add(key);
+                shallowKeys.add(key);
               }
-              hasShallowInboundEvent = true;
             }
           } else if (event.path.length === 0) {
             // The scoped child itself was inserted/replaced/deleted on the root
@@ -1036,8 +1071,8 @@ const yjsImpl: YjsImpl = <S>(
             if (event.path.length === 1) {
               for (const key of event.changes.keys.keys()) {
                 keys.add(key);
+                shallowKeys.add(key);
               }
-              hasShallowInboundEvent = true;
             } else {
               collectBranchEvent(event, event.path.slice(1));
             }

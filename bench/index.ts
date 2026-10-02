@@ -32,6 +32,7 @@ import {
   randomText,
 } from "./harness";
 import { runInboundChildKeyBench } from "./inbound-child-keys";
+import { runInboundMixedBatchBench } from "./inbound-mixed-batch";
 import { formatRecordDeleteReport, runRecordDeleteBench } from "./record-delete";
 import { runStringDiffBench } from "./string-diffs";
 import { runInboundBulkBench, runVersicleBench } from "./versicle";
@@ -733,6 +734,13 @@ runRecordDeleteBench()
     console.error("  running bulk inbound batch scenario...");
 
     return runInboundBulkBench();
+  })
+  .then((report) => {
+    // eslint-disable-next-line no-console
+    console.log(`\n${report}`);
+    console.error("  running inbound mixed-batch scenario...");
+
+    return runInboundMixedBatchBench();
   })
   .then((report) => {
     // eslint-disable-next-line no-console

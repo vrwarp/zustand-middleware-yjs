@@ -291,11 +291,18 @@ path did on every remote change).
 
 Safety comes from being conservative about when the fast route applies:
 
-- **Any shallow event in the batch disables it.** A top-level key being
-  added, replaced or deleted is only visible at that level, so such a batch
-  takes the original key-scoped route for all of its changes (which is also
-  where merge-defaults delete suppression applies). Keys added, replaced or
-  removed *below* a top-level key no longer count as shallow: see §12.
+- **A shallow event sends only its own key to the key-scoped route.** A
+  top-level key being added, replaced or deleted (or edited inside a
+  top-level array, whose path is cut to one segment; see below) is only
+  visible at that level, so that key is re-read whole by the original
+  key-scoped patch, which is also where merge-defaults delete suppression
+  applies. Top-level keys reconcile independently, so the deep paths under
+  every other key in the batch stay on this route, and both parts land in
+  one `setState`. Deep paths under a key that is re-read whole are dropped:
+  the re-read covers them, and if the batch deleted that key they would
+  name a missing branch and escalate the whole batch (next bullet). Keys
+  added, replaced or removed *below* a top-level key are not shallow at
+  all: see §12.
 - **A missing branch escalates rather than skipping.** If a named path is
   absent on either side, `computeInboundStateForPaths` returns `undefined`
   and the caller falls back to the key-scoped patch for the whole batch.
@@ -314,6 +321,35 @@ Safety comes from being conservative about when the fast route applies:
 
 Like the key-scoped path it replaces, this reconciles what the events named
 rather than the whole subtree — one level deeper, but the same assumption.
+
+The first version tracked shallow events with one batch-wide flag, so a
+single one sent *every* change in the batch down the key-scoped route,
+re-reading the hot key in full although it only had a deep change. The
+trigger is ordinary: a small synced field (`selectedId`, `updatedAt`, a
+counter) written next to a deep change, in the same transaction or just in
+the same tick; an edit of a short top-level array; a write to a top-level
+key this store does not even sync (another store sharing the named map);
+or the caller's write next to the store's own flush (see
+`src/own-flush-in-user-transaction.spec.ts`). Receiver patch for one page
+turn on the versicle `progress` tree (the downstream scenario below), with
+a string `currentBookId` and a five-element `recentBookIds` array in the
+same store (`bench/inbound-mixed-batch.ts`); median ms of 7 interleaved
+runs against the parent commit, with the Y.Map + Y.Array `toJSON()` calls
+in parentheses (identical in every run):
+
+| books | page turn alone | + string, same txn, before | after | + string, next txn, before | after | + array edit, before | after |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 0.53 (307) | 11.4 (6,097) | 0.59 (307) | 10.3 (6,098) | 0.68 (307) | 11.1 (6,100) | 0.57 (308) |
+| 40 | 0.54 (304) | 48.6 (24,307) | 0.60 (304) | 52.5 (24,308) | 0.73 (304) | 54.3 (24,310) | 0.65 (305) |
+| 120 | 0.71 (304) | 160.8 (72,867) | 0.67 (304) | 166.8 (72,868) | 0.68 (304) | 163.2 (72,870) | 0.78 (305) |
+
+A mixed batch now costs what its deep part costs plus the small keys
+themselves (the array edit adds its one `toJSON`), flat in library size.
+The gain is for stores that keep small synced fields next to a large tree
+key. Versicle's synced stores keep one data key per named map
+(`progress`, `books`, `annotations`, `entries`, plus the implicit
+`__schemaVersion`), so they rarely hit this: a schema-version write during
+a migration, or an old client writing a key the store no longer syncs.
 
 ### 12. Inbound child-key adds and deletes still re-read the whole key
 
@@ -771,7 +807,7 @@ run-to-run.)
 
 ## Regression coverage
 
-Nine structural test suites lock the fixes in without flaky wall-clock
+Eleven structural test suites lock the fixes in without flaky wall-clock
 assertions:
 
 - `src/text-performance.spec.ts` — Y.Text run coalescing (item counts per
@@ -848,3 +884,21 @@ assertions:
   that patches random write sequences (with concurrent remote edits) into two
   docs — one through the library, one through an element-wise reference
   applier — and requires byte-identical encoded state after every patch.
+- `src/inbound-mixed-shallow-batch.spec.ts` — the per-key shallow split of
+  §11: `toJSON` spies proving the hot key and an untouched sibling are
+  never serialized when a top-level primitive is written in the same
+  transaction or tick as a deep change, a top-level array is edited, a
+  top-level key is deleted, a non-synced key is written, or under `scope`;
+  the mixed batch's receiver `toJSON` count equals its deep part's at 10
+  and 40 books; one notification, convergence and sibling identity per
+  mixed batch.
+- `src/inbound-mixed-batch-convergence.spec.ts` — a fast-check property
+  for the same split, under `replace` and merge-defaults, with and without
+  `scope`: several remote transactions per tick mixing deep edits, child
+  adds and drops, top-level primitive, array and map sets, replacements and
+  deletes (the hot key's included) and non-synced writes, some batches
+  ending with a caller transaction around the store's own flush. After
+  every batch the scopedDiff receiver must equal a legacy full-tree
+  receiver, each store its own doc, and it must notify at most once. Plus a
+  `toJSON` pin that a deep path under a key the batch deletes is dropped
+  rather than escalating the whole batch.
