@@ -113,6 +113,15 @@ const sanitizeDocJson = (json: unknown): unknown => {
   return sanitized;
 };
 
+/**
+ * Own-property read. Record membership and reads are own-property only
+ * throughout: `key in record` and `record[key]` also see Object.prototype
+ * members, so a missing key named like one (e.g. "toString" or "valueOf")
+ * would look present as an inherited function and its delete would be lost.
+ */
+const getOwnValue = (record: Record<string, unknown>, key: string): unknown =>
+  { return Object.hasOwn(record, key) ? record[key] : undefined };
+
 /** Shallow-pick the listed keys (presence-preserving: `undefined` values survive). */
 const pickKeys = (
   source: Record<string, unknown>,
@@ -124,7 +133,7 @@ const pickKeys = (
     if (isDangerousKey(key)) {
       continue;
     }
-    if (key in source) {
+    if (Object.hasOwn(source, key)) {
       picked[key] = source[key];
     }
   }
@@ -312,7 +321,8 @@ const applyChangesToSharedType = (
            * map but absent from the batch-start state is a concurrent remote
            * insert whose inbound microtask has not run yet; never delete it
            * (the resurrection guard). `property` here is a string object key,
-           * so `property in prev` is a meaningful membership test.
+           * so an own-property check on `prev` is a meaningful membership
+           * test.
            *
            * This guard MUST NOT apply to Y.Array: there `property` is a
            * numeric index, and a delete whose index is >= prev.length is the
@@ -324,7 +334,7 @@ const applyChangesToSharedType = (
           const prev = options.previousState;
           const isConcurrentRemoteInsert = prev !== null
             && typeof prev === "object"
-            && !((property as string) in (prev as Record<string, unknown>));
+            && !Object.hasOwn(prev, property as string);
 
           if (!isConcurrentRemoteInsert) {
             sharedType.delete(property as string);
@@ -429,7 +439,7 @@ const applyChangesToSharedType = (
                * emits at most one change per key, so nothing in this loop has
                * touched the child since the snapshot was taken.
                */
-              const childJson = isPlainRecord(sharedTypeJson) && prop in sharedTypeJson
+              const childJson = isPlainRecord(sharedTypeJson) && Object.hasOwn(sharedTypeJson, prop)
                 ? { "value": sharedTypeJson[prop] }
                 : undefined;
 
@@ -605,14 +615,14 @@ export const patchSharedTypeScoped = (
       continue;
     }
 
-    const prevValue = prevRecord[key];
-    const nextValue = newRecord[key];
+    const prevValue = getOwnValue(prevRecord, key);
+    const nextValue = getOwnValue(newRecord, key);
 
     if (prevValue instanceof Function || nextValue instanceof Function) {
       continue;
     }
 
-    const hasPresenceChanged = (key in newRecord) !== (key in prevRecord);
+    const hasPresenceChanged = Object.hasOwn(newRecord, key) !== Object.hasOwn(prevRecord, key);
 
     // The Object.is fast path: untouched keys are skipped entirely.
     if (!hasPresenceChanged && Object.is(prevValue, nextValue)) {
@@ -676,8 +686,8 @@ const scopedPatchKey = (
   const existing = hasInMap ? parentMap.get(key) : undefined;
 
   if (
-    (key in prevRecord) &&
-    (key in newRecord) &&
+    Object.hasOwn(prevRecord, key) &&
+    Object.hasOwn(newRecord, key) &&
     Array.isArray(prevValue) &&
     Array.isArray(nextValue) &&
     existing instanceof yjs.Array
@@ -704,8 +714,8 @@ const scopedPatchKey = (
   }
 
   if (
-    (key in prevRecord) &&
-    (key in newRecord) &&
+    Object.hasOwn(prevRecord, key) &&
+    Object.hasOwn(newRecord, key) &&
     isPlainRecord(prevValue) &&
     isPlainRecord(nextValue) &&
     existing instanceof yjs.Map
@@ -717,14 +727,14 @@ const scopedPatchKey = (
         continue;
       }
 
-      const prevChild = prevValue[childKey];
-      const nextChild = nextValue[childKey];
+      const prevChild = getOwnValue(prevValue, childKey);
+      const nextChild = getOwnValue(nextValue, childKey);
 
       if (prevChild instanceof Function || nextChild instanceof Function) {
         continue;
       }
 
-      const hasPresenceChanged = (childKey in prevValue) !== (childKey in nextValue);
+      const hasPresenceChanged = Object.hasOwn(prevValue, childKey) !== Object.hasOwn(nextValue, childKey);
 
       if (!hasPresenceChanged && Object.is(prevChild, nextChild)) {
         continue;
@@ -751,7 +761,7 @@ const scopedPatchKey = (
 
   const b: Record<string, unknown> = {};
 
-  if (key in newRecord) {
+  if (Object.hasOwn(newRecord, key)) {
     b[key] = nextValue;
   }
 
@@ -1063,7 +1073,7 @@ export const computeInboundState = <T>(
     if (isDangerousKey(key)) {
       continue;
     }
-    if (key in current && !(current[key] instanceof Function)) {
+    if (Object.hasOwn(current, key) && !(current[key] instanceof Function)) {
       oldSubset[key] = current[key];
     }
   }
@@ -1160,7 +1170,7 @@ const readStateAtPath = (state: unknown, path: InboundPath): unknown => {
     if (isPlainRecord(node)) {
       const key = String(step);
 
-      if (!(key in node)) {
+      if (!Object.hasOwn(node, key)) {
         return absent;
       }
       node = node[key];

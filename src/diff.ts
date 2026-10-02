@@ -307,14 +307,14 @@ const isDeepEqualForDiff = (a: unknown, b: unknown): boolean => {
 
   if (isRecord(a) && isRecord(b)) {
     const isEveryAKeyAccounted = Object.keys(a).every((property) =>
-       property in b || a[property] instanceof Function );
+       Object.hasOwn(b, property) || a[property] instanceof Function );
 
     if (!isEveryAKeyAccounted) {
       return false;
     }
 
     return Object.keys(b).every((property) => {
-      if (!(property in a)) {
+      if (!Object.hasOwn(a, property)) {
         return false;
       }
 
@@ -582,14 +582,19 @@ const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOpt
 const getRecordChanges = (a: Record<string, unknown>, b: Record<string, unknown>): Change[] => {
   const changeList: Change[] = [];
 
+  /*
+   * Membership is own-property only: `in` walks the prototype chain, so a
+   * removed key named like an Object.prototype member ("toString",
+   * "valueOf", ...) would still look present and its delete would be lost.
+   */
   for (const [property, value] of Object.entries(a)) {
-    if (!(property in b) && !(value instanceof Function)) {
+    if (!Object.hasOwn(b, property) && !(value instanceof Function)) {
       changeList.push([changeType.delete, property, undefined]);
     }
   }
 
   for (const [property, value] of Object.entries(b)) {
-    if (!(property in a)) {
+    if (!Object.hasOwn(a, property)) {
       changeList.push([changeType.insert, property, value]);
     } else if (isDiffable(a[property]) && isDiffable(value) && isSameType(a[property], value)) {
       /*

@@ -541,7 +541,7 @@ const yjsImpl: YjsImpl = <S>(
       const initialRecord = initialState as Record<string, unknown>;
 
       for (const key of syncedKeys) {
-        if (!(key in initialRecord)) {
+        if (!Object.hasOwn(initialRecord, key)) {
           throw new Error(
             `[zustand-middleware-yjs] syncedKeys entry "${key}" is not a key ` +
             `of the initial state of store "${name}". Synced keys must exist ` +
