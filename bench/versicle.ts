@@ -19,11 +19,17 @@
  * 3. The readingSessions sawtooth (500 -> 300 head splice) — a 201-element
  *    block removal, far beyond the differ's deep-equality lookahead window.
  * 4. Inbound cost on a second client receiving a page turn.
+ *
+ * `runInboundBulkBench` (end of file) covers the other inbound shape: one
+ * remote batch that changes many sibling records at once (offline catch-up,
+ * a backfill migration, "mark all read").
  */
 import { performance } from "node:perf_hooks";
 import * as yjs from "yjs";
 import { createStore, type StoreApi } from "zustand/vanilla";
-import yjsMiddleware, { getYjsStoreHandle } from "../src";
+import yjsMiddleware, { __scopedDiffDevSampling, getYjsStoreHandle } from "../src";
+import { computeInboundStateForPaths, type InboundPath, minimizeInboundPaths } from "../src/patching";
+import { bench } from "./harness";
 
 export interface ReadingSession {
   cfiRange: string;
@@ -410,5 +416,294 @@ export const runVersicleBench = async (): Promise<string> => {
     header,
     divider,
     ...lines,
+  ].join("\n");
+};
+
+/*
+ * Bulk inbound batch on the path-scoped route.
+ *
+ * Versicle's `library` and `annotations` stores keep one record per item
+ * under ONE top-level key. When a device comes back online, y-cinder applies
+ * its backlog inside one `ydoc.transact`, so the receiving store gets ONE
+ * observeDeep batch with one deep event per changed record. A migration that
+ * backfills a field, a bulk re-tag, or "mark all read" looks the same. Every
+ * event names `['library', bookId]`, so a scopedDiff receiver takes the
+ * deep-path route (`computeInboundStateForPaths`) for the whole batch.
+ *
+ * Measured per batch size N (every record of an N-record library changed):
+ * 1. The e2e inbound store patch, scopedDiff (deep-path route) against the
+ *    legacy full-tree route on the same batch, interleaved, median of five.
+ * 2. `minimizeInboundPaths` alone: median time, plus a deterministic count
+ *    of path-segment reads taken through Proxy-wrapped paths.
+ * At a fixed parent width (5,000 records) it also measures P changed
+ * records, which isolates the per-path copy of the shared parent record.
+ */
+
+interface LibraryBook {
+  title: string;
+  author: string;
+  lastRead: number;
+  tags: string[];
+}
+
+interface LibraryState {
+  library: Record<string, LibraryBook>;
+}
+
+const LIBRARY_MAP = "library-store";
+
+const makeLibraryBook = (index: number): LibraryBook => {
+  return {
+    "title": `Title ${String(index)}`,
+    "author": `Author ${String(index % 97)}`,
+    "lastRead": 0,
+    "tags": [`shelf-${String(index % 7)}`, "unread"],
+  };
+};
+
+const makeLibrary = (books: number): LibraryState["library"] => {
+  const library: LibraryState["library"] = {};
+
+  for (let index = 0; index < books; index = index + 1) {
+    library[`book-${String(index)}`] = makeLibraryBook(index);
+  }
+
+  return library;
+};
+
+/** The doc shape the middleware writes for `makeLibrary` with disableYText. */
+const buildLibraryDoc = (books: number): yjs.Doc => {
+  const doc = new yjs.Doc();
+
+  doc.transact(() => {
+    const library = new yjs.Map<yjs.Map<unknown>>();
+
+    doc.getMap(LIBRARY_MAP).set("library", library);
+
+    for (const [bookId, book] of Object.entries(makeLibrary(books))) {
+      const bookMap = new yjs.Map<unknown>();
+
+      library.set(bookId, bookMap);
+      bookMap.set("title", book.title);
+      bookMap.set("author", book.author);
+      bookMap.set("lastRead", book.lastRead);
+      bookMap.set("tags", yjs.Array.from(book.tags));
+    }
+  });
+
+  return doc;
+};
+
+const getLibraryMap = (doc: yjs.Doc): yjs.Map<yjs.Map<unknown>> =>
+  { return doc.getMap(LIBRARY_MAP).get("library") as yjs.Map<yjs.Map<unknown>> };
+
+/** One remote transaction that stamps `lastRead` on every record. */
+const markAllRead = (doc: yjs.Doc, stamp: number): void => {
+  doc.transact(() => {
+    getLibraryMap(doc).forEach((bookMap) => { bookMap.set("lastRead", stamp); });
+  });
+};
+
+interface CatchUpResult {
+  deepMedianMs: number;
+  legacyMedianMs: number;
+}
+
+/**
+ * Times the store patch of one all-records batch on a scopedDiff receiver
+ * and on a legacy full-tree receiver. A/B samples are interleaved and the
+ * first pair is a discarded warmup.
+ *
+ * @param books - Library size; every record changes in each batch.
+ * @param runs - Timed batches per receiver.
+ * @returns Median patch time per route.
+ */
+const runCatchUp = async (books: number, runs: number): Promise<CatchUpResult> => {
+  const sender = buildLibraryDoc(books);
+  const initial = yjs.encodeStateAsUpdate(sender);
+  const updates: Uint8Array[] = [];
+
+  for (let stamp = 1; stamp <= runs + 1; stamp = stamp + 1) {
+    const stateVector = yjs.encodeStateVector(sender);
+
+    markAllRead(sender, stamp);
+    updates.push(yjs.encodeStateAsUpdate(sender, stateVector));
+  }
+
+  const receivers = [true, false].map((scopedDiff) => {
+    const doc = new yjs.Doc();
+
+    yjs.applyUpdate(doc, initial);
+
+    const store = createStore<LibraryState>()(
+      yjsMiddleware(doc, LIBRARY_MAP, () => ({ "library": {} }), {
+        "disableYText": true,
+        scopedDiff,
+      })
+    );
+
+    if (Object.keys(store.getState().library).length !== books) {
+      throw new Error("bulk-inbound receiver did not hydrate");
+    }
+
+    return { doc, "samples": [] as number[], store };
+  });
+
+  for (const [index, update] of updates.entries()) {
+    for (const receiver of receivers) {
+      yjs.applyUpdate(receiver.doc, update);
+
+      // The store patch is microtask-batched: drain it and time the patch.
+      const start = performance.now();
+
+      await Promise.resolve();
+
+      const elapsed = performance.now() - start;
+      const { library } = receiver.store.getState();
+
+      if (library["book-0"].lastRead !== index + 1 || library[`book-${String(books - 1)}`].lastRead !== index + 1) {
+        throw new Error("bulk-inbound batch was not applied to the store");
+      }
+      if (index > 0) {
+        receiver.samples.push(elapsed);
+      }
+    }
+  }
+
+  return {
+    "deepMedianMs": median(receivers[0].samples),
+    "legacyMedianMs": median(receivers[1].samples),
+  };
+};
+
+const makeSiblingPaths = (count: number, stride: number): InboundPath[] =>
+  { return Array.from({ "length": count }, (unused, index) => ["library", `book-${String(index * stride)}`]) };
+
+/**
+ * Index reads `minimizeInboundPaths` makes on the segments of `paths`,
+ * counted through accessor-backed copies of each path. Deterministic: no
+ * timing involved.
+ *
+ * @param paths - The batch's paths.
+ * @returns Total segment reads across all paths.
+ */
+const countMinimizeReads = (paths: readonly InboundPath[]): number => {
+  const counter = { "reads": 0 };
+  const counted = paths.map((path) => {
+    const copy: (string | number)[] = [];
+
+    for (const [index, step] of path.entries()) {
+      Object.defineProperty(copy, index, {
+        "enumerable": true,
+        "get": () => {
+          counter.reads = counter.reads + 1;
+
+          return step;
+        },
+      });
+    }
+
+    return copy;
+  });
+
+  minimizeInboundPaths(counted);
+
+  return counter.reads;
+};
+
+interface BulkRow {
+  books: number;
+  deepMedianMs: number;
+  legacyMedianMs: number;
+  minimizeMedianMs: number;
+  minimizeReads: number;
+}
+
+interface WidthRow {
+  changed: number;
+  medianMs: number;
+}
+
+const PARENT_WIDTH = 5_000;
+
+/*
+ * To run this scenario without the rest of the suite:
+ *   npx ts-node -T -P bench/tsconfig.json \
+ *     -e 'require("./bench/versicle").runInboundBulkBench().then(console.log)'
+ */
+/**
+ * Runs the bulk inbound scenario and formats a markdown report.
+ *
+ * @returns A promise for the report as a markdown string.
+ */
+export const runInboundBulkBench = async (): Promise<string> => {
+  // Also pinned by bench/index.ts; repeated so the scenario runs alone too.
+  __scopedDiffDevSampling.rate = 0;
+
+  const rows: BulkRow[] = [];
+
+  for (const books of [1_000, 2_000, 4_000]) {
+    console.error(`  running bulk inbound batch: ${String(books)} records...`);
+
+    const catchUp = await runCatchUp(books, 5);
+    const paths = makeSiblingPaths(books, 1);
+    const minimize = bench(
+      `minimizeInboundPaths: ${String(books)} sibling paths`,
+      () => { minimizeInboundPaths(paths); },
+      { "runs": 5, "warmupRuns": 1 }
+    );
+
+    rows.push({
+      books,
+      ...catchUp,
+      "minimizeMedianMs": minimize.medianMs,
+      "minimizeReads": countMinimizeReads(paths),
+    });
+  }
+
+  /*
+   * Fixed parent width, growing batch: with one copy of the shared parent
+   * per batch the cost would stay near the P = 1 row; with one copy per
+   * path it grows with P times the parent's width.
+   */
+  console.error(`  running bulk inbound batch: fixed ${String(PARENT_WIDTH)}-record parent...`);
+
+  const widthDoc = buildLibraryDoc(PARENT_WIDTH);
+  const widthState: LibraryState = { "library": makeLibrary(PARENT_WIDTH) };
+
+  markAllRead(widthDoc, 1);
+
+  const widthRows: WidthRow[] = [1, 8, 32, 128].map((changed) => {
+    const paths = makeSiblingPaths(changed, Math.floor(PARENT_WIDTH / changed));
+    const result = bench(
+      `computeInboundStateForPaths: ${String(changed)} of ${String(PARENT_WIDTH)} records`,
+      () => { computeInboundStateForPaths(widthState, widthDoc.getMap(LIBRARY_MAP), paths); },
+      { "runs": 7, "warmupRuns": 1 }
+    );
+
+    return { changed, "medianMs": result.medianMs };
+  });
+
+  const baseMs = widthRows[0].medianMs;
+
+  return [
+    "## Bulk inbound batch (one remote transaction changes every record of a library)",
+    "",
+    "| records changed | inbound patch, scopedDiff deep-path (ms) | inbound patch, legacy full-tree (ms) | " +
+      "deep / legacy | minimizeInboundPaths (ms) | minimize path-segment reads |",
+    "|---:|---:|---:|---:|---:|---:|",
+    ...rows.map((row) => {
+      return `| ${String(row.books)} | ${row.deepMedianMs.toFixed(1)} | ${row.legacyMedianMs.toFixed(1)} | ` +
+        `${(row.deepMedianMs / row.legacyMedianMs).toFixed(1)}x | ${row.minimizeMedianMs.toFixed(2)} | ` +
+        `${String(row.minimizeReads)} |`;
+    }),
+    "",
+    `computeInboundStateForPaths, P changed records under one ${String(PARENT_WIDTH)}-record parent:`,
+    "",
+    "| P | median (ms) | vs P = 1 |",
+    "|---:|---:|---:|",
+    ...widthRows.map((row) => {
+      return `| ${String(row.changed)} | ${row.medianMs.toFixed(2)} | ${(row.medianMs / baseMs).toFixed(1)}x |`;
+    }),
   ].join("\n");
 };

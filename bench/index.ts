@@ -30,7 +30,7 @@ import {
   randomText,
 } from "./harness";
 import { runInboundChildKeyBench } from "./inbound-child-keys";
-import { runVersicleBench } from "./versicle";
+import { runInboundBulkBench, runVersicleBench } from "./versicle";
 
 // Deterministic perf runs: disable the DEV-only sampled convergence check so
 // scopedDiff numbers measure the flush itself, not the diagnostic.
@@ -689,6 +689,13 @@ runVersicleBench()
     console.error("  running inbound child-key add / delete scenario...");
 
     return runInboundChildKeyBench();
+  })
+  .then((report) => {
+    // eslint-disable-next-line no-console
+    console.log(`\n${report}`);
+    console.error("  running bulk inbound batch scenario...");
+
+    return runInboundBulkBench();
   })
   .then((report) => {
     // eslint-disable-next-line no-console

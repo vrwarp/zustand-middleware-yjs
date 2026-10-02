@@ -1310,30 +1310,38 @@ const readStateAtPath = (state: unknown, path: InboundPath): unknown => {
 };
 
 /**
- * Returns `state` with `value` at `path`, sharing every object that is not
- * on the path. Containers along the spine are copied in kind (array vs
- * record) so array-typed levels stay arrays. A container in `owned` is a
- * copy this patch already made and is updated in place, so a parent that
- * many paths of one batch cross is copied once, not once per path.
+ * Returns `state` with `value` at `path` (from segment `depth` on), sharing
+ * every object that is not on the path. Containers along the spine are
+ * copied in kind (array vs record) so array-typed levels stay arrays.
+ *
+ * Why `owned`: a batch of P paths under one W-key parent (a catch-up or a
+ * bulk edit of sibling records) used to copy that parent once per path,
+ * O(P x W). A container this batch already copied is in `owned` and is
+ * written in place instead, so each spine container is copied once per
+ * batch. Only those copies are ever written: `state` and everything
+ * reachable from it may be frozen or shared with subscribers. Writing in
+ * place cannot land inside a value another path patched, because the
+ * caller's paths are prefix-free (`minimizeInboundPaths`).
  */
 const setStateAtPath = (
   state: unknown,
   path: InboundPath,
+  depth: number,
   value: unknown,
   owned: WeakSet<object>
 ): unknown => {
-  if (path.length === 0) {
+  if (depth === path.length) {
     return value;
   }
 
-  const [step, ...rest] = path;
+  const step = path[depth];
 
   if (Array.isArray(state)) {
     const index = Number(step);
-    const copy = owned.has(state) ? state : [...state];
+    const copy: unknown[] = owned.has(state) ? state : [...state];
 
     owned.add(copy);
-    copy[index] = setStateAtPath(state[index], rest, value, owned);
+    copy[index] = setStateAtPath(state[index], path, depth + 1, value, owned);
 
     return copy;
   }
@@ -1344,11 +1352,13 @@ const setStateAtPath = (
     return state;
   }
 
-  const source = isPlainRecord(state) ? state : {};
-  const record = owned.has(source) ? source : { ...source };
+  let record: Record<string, unknown> = {};
 
+  if (isPlainRecord(state)) {
+    record = owned.has(state) ? state : { ...state };
+  }
   owned.add(record);
-  record[key] = setStateAtPath(source[key], rest, value, owned);
+  record[key] = setStateAtPath(record[key], path, depth + 1, value, owned);
 
   return record;
 };
@@ -1365,9 +1375,12 @@ interface PathTrieNode {
  * not cover `['a','b']` (segment-wise comparison, not string prefix). Of two
  * equal paths, the one listed first is kept.
  *
- * Walks a trie of the kept paths, so the cost is linear in the number of
- * segments rather than paths × kept paths: one bulk remote batch (an
- * offline catch-up, an import) can name thousands of keys.
+ * Kept paths go into a trie keyed by `String(step)`, so each path costs one
+ * walk of its own length rather than a comparison with every kept path
+ * (O(P^2) for a batch of P sibling paths; one bulk remote batch — an offline
+ * catch-up, an import — can name thousands of keys). A walk that reaches a
+ * kept path's end is covered, and it only crosses existing nodes, so it adds
+ * none.
  */
 export const minimizeInboundPaths = (paths: readonly InboundPath[]): InboundPath[] => {
   const sorted = [...paths];
@@ -1606,7 +1619,7 @@ export const computeInboundStateForPaths = <T>(
     }
   }
 
-  // Containers copied by this call: updated in place from then on.
+  // Spine containers this call copied: written in place by later paths.
   const owned = new WeakSet();
   let next: unknown = currentState;
 
@@ -1621,7 +1634,7 @@ export const computeInboundStateForPaths = <T>(
     const updated = applyChangedKeys(record, docMap, keys, owned);
 
     if (updated !== record) {
-      next = setStateAtPath(next, parentPath, updated, owned);
+      next = setStateAtPath(next, parentPath, 0, updated, owned);
     }
   }
 
@@ -1640,7 +1653,7 @@ export const computeInboundStateForPaths = <T>(
     const patched = reconcileStateValue(stateValue, docValue);
 
     if (!Object.is(patched, stateValue)) {
-      next = setStateAtPath(next, path, patched, owned);
+      next = setStateAtPath(next, path, 0, patched, owned);
     }
   }
 

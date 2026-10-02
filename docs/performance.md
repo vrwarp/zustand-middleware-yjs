@@ -408,6 +408,71 @@ the doc's internal key order, which can differ when a deleted key is
 re-added. Values are identical; key order of a record was never replicated
 between devices.
 
+### 13. Bulk inbound batches copied the shared parent once per path
+
+§11 was measured with single-path batches. A batch that changes many sibling
+records at once names one path per record under the same wide parent —
+`['library', 'book-0']` ... `['library', 'book-N']`. That is what an offline
+catch-up delivers (y-cinder applies its backlog inside one transaction, so it
+arrives as one `observeDeep` call), and so do a backfill migration, a bulk
+re-tag and "mark all read". Two costs on the path-scoped route were per path:
+
+- `setStateAtPath` rebuilt the whole spine for every path, so P paths under a
+  W-key parent spread that parent P times: O(P × W) property copies
+  (16,004,000 for 4,000 changed records, where 4,001 suffice).
+- `minimizeInboundPaths` compared every path with every kept path: O(P²),
+  exactly 2P² segment reads (31,992,000 at 4,000 paths).
+
+The P × W term is the root cause and dominates. Its constant depends on how
+V8 represents the parent: a spread copy of an object with more than ~1,020
+keys, or of one already in dictionary mode, is built in dictionary mode at
+~0.3-0.5 µs per property, which is why 1,000 → 2,000 records cost far more
+than 4×. The route that exists to be the fast path ended up ~300× slower
+than the legacy full-tree route.
+
+**Fix:** each spine container is copied at most once per batch.
+`computeInboundStateForPaths` keeps a per-call set of the copies it made; a
+later path that reaches one writes into it in place instead of copying it
+again. Nothing else is ever written — not the store state or anything
+reachable from it (it may be frozen, and subscribers share it), and not a
+patched value (which shares unchanged subtrees with the old state). Writing
+in place is safe because the minimized paths are prefix-free, so no write
+lands inside another path's patched value. `minimizeInboundPaths` now walks a
+trie keyed by `String(step)` in the same length-sorted order, so its output
+and semantics are unchanged (`0` and `'0'` collide; `['a','bb']` does not
+cover `['a','b']`). `setStateAtPath` also recurses by depth index instead of
+re-slicing the path at every level.
+
+The owned-copy spine and the trie were developed independently for this
+section and for §12 (whose key paths need them too); the integrated code
+keeps one implementation of each, shared by key paths and node paths. The
+numbers below were measured on node-path batches before §12 landed.
+
+Receiver inbound patch, one transaction changes every record of an N-record
+library (`runInboundBulkBench`, medians of five interleaved runs):
+
+| records changed | deep-path route, before | after | legacy full-tree route | minimize reads, before | after |
+|---:|---:|---:|---:|---:|---:|
+| 1,000 | 38.1 ms | 14.6 ms | 8.2 ms | 1,998,000 | 2,000 |
+| 2,000 | 1,491.9 ms | 13.8 ms | 10.6 ms | 7,996,000 | 4,000 |
+| 4,000 | 6,905.6 ms | 26.9 ms | 29.5 ms | 31,992,000 | 8,000 |
+
+P changed records under one fixed 5,000-record parent (properties copied
+are counted exactly, with an instrumented copy of `setStateAtPath`):
+
+| P | before | after | properties copied, before | after |
+|---:|---:|---:|---:|---:|
+| 1 | 1.95 ms | 2.12 ms | 5,001 | 5,001 |
+| 8 | 20.99 ms | 1.88 ms | 40,008 | 5,001 |
+| 32 | 65.76 ms | 2.07 ms | 160,032 | 5,001 |
+| 128 | 294.75 ms | 2.49 ms | 640,128 | 5,001 |
+
+The deep-path route now costs about the same as the legacy route on a bulk
+batch (O(P + W)), and stays flat in P under a fixed parent. (The 1,000 row
+runs first in each process and is the noisiest: 7.3-28.7 ms after the fix.) A single-path
+batch (a page turn) still pays one O(W) spread of its parent; that copy is
+inherent to the immutable-update contract and is unchanged.
+
 ## Downstream-shaped aging scenario (one hot top-level key)
 
 `bench/versicle.ts` models the shape §9 and §10 were found in: a single
@@ -536,7 +601,7 @@ run-to-run.)
 
 ## Regression coverage
 
-Five structural test suites lock the fixes in without flaky wall-clock
+Six structural test suites lock the fixes in without flaky wall-clock
 assertions:
 
 - `src/text-performance.spec.ts` — Y.Text run coalescing (item counts per
@@ -583,3 +648,10 @@ assertions:
   minimizer), and — the one ratio of CPU times, because a parent copy leaves
   no trace outside the patch — 64 changed keys under a 5,000-key parent
   costing about what one does.
+- `src/inbound-paths-scaling.spec.ts` — the §13 fix: segment-read counters
+  (accessor-backed paths) proving `minimizeInboundPaths` and
+  `computeInboundStateForPaths` read each path a bounded number of times as
+  a bulk batch grows 4×, and a CPU-time *ratio* (a 32-path against a 1-path
+  batch under the same 5,000-record parent, never an absolute time;
+  1.1-1.4 fixed, 30-36 unfixed, limit 6) proving the shared parent is copied
+  once per batch, not once per changed record.
