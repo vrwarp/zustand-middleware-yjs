@@ -168,6 +168,10 @@ const applyChangesToSharedType = (
     effectiveChanges = coalesceArrayChanges(changes);
   }
 
+  // Y.Array length before any change applies: maps pending indices back to
+  // the batch-start positions previousState is indexed by (see pending).
+  const initialArrayLength = sharedType instanceof yjs.Array ? sharedType.length : 0;
+
   for (const [type, property, value] of effectiveChanges) {
     switch (type) {
       case changeType.insert:
@@ -296,7 +300,21 @@ const applyChangesToSharedType = (
         let childPreviousState: unknown;
 
         if (options.previousState && typeof options.previousState === "object") {
-          childPreviousState = (options.previousState as Record<string, unknown>)[property as string];
+          /*
+           * A Y.Array pending index is in POST-application coordinates (the
+           * earlier inserts/deletes of this list have already shifted the
+           * element), but previousState mirrors the array BEFORE this list.
+           * The differ emits left to right, so every earlier insert/delete
+           * sits before this element: undo their net shift to read the
+           * element's OWN batch-start value. Indexing by the shifted position
+           * hands the nested Y.Map delete guard a different record, dropping
+           * a genuine local delete or deleting a concurrent remote insert.
+           */
+          const previousKey = sharedType instanceof yjs.Array
+            ? (property as number) - (sharedType.length - initialArrayLength)
+            : property;
+
+          childPreviousState = (options.previousState as Record<string, unknown>)[previousKey as string];
         }
 
         if (sharedType instanceof yjs.Map) {
