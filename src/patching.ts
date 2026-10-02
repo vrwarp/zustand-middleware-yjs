@@ -50,13 +50,14 @@ export interface PatchOptions extends MappingOptions {
  */
 export interface ScopedPatchOptions extends PatchOptions {
   /**
-   * Also write top-level state keys the map does not have, even when their
+   * Also write top-level state keys the map has never held, even when their
    * value is unchanged since the batch start. Required under `'replace'`
    * hydration, where every full inbound patch (a reload, a peer) deletes a
    * doc-absent key; left off under merge-defaults, whose retained defaults
    * backfill lazily. Only safe once the doc has loaded: written into a doc
    * that has not, each default is a write concurrent with the persisted
-   * value, and it can win the merge.
+   * value, and it can win the merge. A key the map held and has since
+   * deleted is not written: under `'replace'` that delete is authoritative.
    */
   backfillAbsentKeys?: boolean;
 
@@ -953,9 +954,11 @@ export const patchSharedType = (
  * `previousState` DELETE guard and the Y.Text↔string mismatch repair behave
  * exactly as in the legacy full diff.
  *
- * With `backfillAbsentKeys`, an unchanged top-level key the map does not
- * have yet (a never-set declared default) is written whole, as the legacy
- * full diff would; without it such keys stay lazy until first set.
+ * With `backfillAbsentKeys`, an unchanged top-level key the map has never
+ * held (a never-set declared default) is written whole, as the legacy full
+ * diff would; without it such keys stay lazy until first set. A key the map
+ * held and has since deleted (by a peer, or by the caller earlier in this
+ * transaction) stays deleted even while state still has it.
  *
  * @param sharedType - The top-level Y.Map the store is bound to.
  * @param newState - The post-batch state.
@@ -998,12 +1001,16 @@ export const patchSharedTypeScoped = (
     }
 
     const hasPresenceChanged = Object.hasOwn(newRecord, key) !== Object.hasOwn(prevRecord, key);
-    const isAbsentFromMap = backfillAbsentKeys === true
+    // A deleted key keeps its tombstone item in `_map` (`has` is false), so
+    // only a key with no item at all was never written. State still holding
+    // a deleted key is stale (a delete in this transaction, or one the
+    // key-scoped inbound patch missed), not a default to write back.
+    const isNeverWritten = backfillAbsentKeys === true
       && Object.hasOwn(newRecord, key)
-      && !sharedType.has(key);
+      && !sharedType._map.has(key);
 
     // The Object.is fast path: untouched keys are skipped entirely.
-    if (!hasPresenceChanged && !isAbsentFromMap && Object.is(prevValue, nextValue)) {
+    if (!hasPresenceChanged && !isNeverWritten && Object.is(prevValue, nextValue)) {
       continue;
     }
 

@@ -178,11 +178,12 @@ export interface YjsOptions {
    * fast path — guarded by the DEV sampling tripwire (loud failure) and the
    * contract suite's fast-check equivalence property. Under the default
    * `'replace'` hydration, once the store has hydrated (from the doc, or via
-   * `markHydrated()` for a synced but empty doc) top-level keys the map lacks
-   * are also written, as the full diff does, so untouched defaults survive a
-   * reload. A flush before that writes only what changed, so it cannot
-   * clobber a doc that has not loaded yet; hydrating then writes the missing
-   * keys. Under `'merge-defaults'` they stay lazy.
+   * `markHydrated()` for a synced but empty doc) top-level keys the map has
+   * never held are also written, as the full diff does, so untouched
+   * defaults survive a reload; a deleted key stays deleted. A flush before
+   * that writes only what changed, so it cannot clobber a doc that has not
+   * loaded yet; hydrating then writes the missing keys. Under
+   * `'merge-defaults'` they stay lazy.
    * - Inbound: only the top-level keys named by the batch's Yjs events are
    * re-read and patched; untouched keys keep their object identity.
    */
