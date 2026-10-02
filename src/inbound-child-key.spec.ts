@@ -25,6 +25,7 @@
 import * as yjs from "yjs";
 import { createStore } from "zustand/vanilla";
 import yjsMiddleware, { __scopedDiffDevSampling, getYjsStoreHandle } from ".";
+import { objectToYMap } from "./mapping";
 import { computeInboundStateForPaths, type InboundPath } from "./patching";
 
 interface Session { start: number; end: number; label: string }
@@ -96,17 +97,24 @@ const makePair = (key: string, initial: unknown) => {
   };
 
   /*
-   * The same write in one update together with a top-level key this store
-   * does not sync: the root-map event sends the batch down the key-scoped
-   * route, the reference cost a narrowed patch must stay under.
+   * The same write in one update together with a root-map event for the
+   * synced key itself (the key replaced by an equal copy): the receiver
+   * re-reads that whole key on the key-scoped route, the reference cost a
+   * narrowed patch must stay under. A root-map event for a key this store
+   * does not sync no longer sends the batch there: only the keys such
+   * events name are re-read whole (inbound-mixed-shallow-batch.spec.ts).
    */
   const prepareKeyScoped = (write: (value: State) => State): Uint8Array => {
     const stateVector = yjs.encodeStateVector(docB);
+    // A copy with no store attached, so the sender does not react to the
+    // replacement while the receiver's work is being counted.
+    const copy = new yjs.Doc();
 
     prepare(write);
-    docA.getMap("root").set("foreign", Date.now());
+    yjs.applyUpdate(copy, yjs.encodeStateAsUpdate(docA));
+    copy.getMap("root").set(key, objectToYMap(storeA.getState()[key] as State, { "disableYText": true }));
 
-    return yjs.encodeStateAsUpdate(docA, stateVector);
+    return yjs.encodeStateAsUpdate(copy, stateVector);
   };
 
   return { docB, deliver, key, prepare, prepareKeyScoped, storeA, storeB };
