@@ -273,7 +273,7 @@ const isEveryElementEqualForDiff = (a: unknown[], b: unknown[]): boolean => {
  * `b`'s array elements compare in their stored form (toYArrayElements), and
  * non-diffable values compare by `Object.is` (so an unchanged NaN is equal).
  */
-const isDeepEqualForDiff = (a: unknown, b: unknown): boolean => {
+export const isDeepEqualForDiff = (a: unknown, b: unknown): boolean => {
   if (Object.is(a, b)) {
     return true;
   }

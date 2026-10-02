@@ -3,6 +3,7 @@ import type {
   StateCreator,
   StoreMutatorIdentifier,
 } from "zustand";
+import { isDeepEqualForDiff } from "./diff";
 import { isDevEnvironment } from "./env";
 import {
   assertScopedDiffConvergence,
@@ -221,6 +222,14 @@ type YjsImpl = <T>(
   options?: YjsOptions
 ) => StateCreator<T>;
 
+/**
+ * What a store's flush wrote, recorded in the meta of a transaction it shares
+ * with a caller (see recordOwnFlush).
+ */
+interface OwnFlush {
+  dataMap: yjs.Map<unknown>;
+  state: Record<string, unknown>;
+}
 
 /**
  * This function is the middleware the sets up the Zustand store to mirror state
@@ -406,6 +415,30 @@ const yjsImpl: YjsImpl = <S>(
      */
     let inboundState: unknown;
 
+    /**
+     *
+     * Inside a caller's doc.transact, Yjs reuses the outer transaction and
+     * drops our origin, so the observer cannot tell this store's write from
+     * the caller's by origin alone. Record what was flushed on the
+     * transaction itself (keyed by the store api) so it still can.
+     */
+    const recordOwnFlush = (
+      transaction: yjs.Transaction,
+      dataMap: yjs.Map<unknown>,
+      state: S
+    ) => {
+      if (transaction.origin === api) {
+        return;
+      }
+
+      const ownFlush: OwnFlush = {
+        dataMap,
+        state: state as Record<string, unknown>,
+      };
+
+      transaction.meta.set(api, ownFlush);
+    };
+
     const flushOutbound = () => {
       isOutboundPending = false;
       const previousState = batchPreviousState;
@@ -445,11 +478,14 @@ const yjsImpl: YjsImpl = <S>(
         // Not while an inbound batch is unapplied: a key the doc lacks may
         // then be a remote delete state has not seen yet, and the next flush
         // backfills any key that is still absent.
-        doc.transact(() => {
-          patchSharedTypeScoped(ensureDataMap(), state, previousState, {
+        doc.transact((transaction) => {
+          const dataMap = ensureDataMap();
+
+          patchSharedTypeScoped(dataMap, state, previousState, {
             ...sharedOptions,
             backfillAbsentKeys: hydration !== "merge-defaults" && !hasUnappliedInbound,
           });
+          recordOwnFlush(transaction, dataMap, state);
         }, api);
 
         // Divergence tripwire: occasionally verify the scoped flush against a
@@ -472,11 +508,16 @@ const yjsImpl: YjsImpl = <S>(
          * without a captured previousState. Read the FINAL state after all
          * synchronous mutations this tick.
          */
-        doc.transact(() => {
-          patchSharedType(ensureDataMap(), api.getState(), {
+        const state = api.getState();
+
+        doc.transact((transaction) => {
+          const dataMap = ensureDataMap();
+
+          patchSharedType(dataMap, state, {
             ...sharedOptions,
             previousState,
           });
+          recordOwnFlush(transaction, dataMap, state);
         }, api);
       }
     };
@@ -801,6 +842,68 @@ const yjsImpl: YjsImpl = <S>(
           ? String(event.path[0]) === scopeKey
           : event.changes.keys.has(scopeKey) }) };
 
+    /**
+     *
+     * Narrows a batch that also carries this store's own flush (made inside a
+     * caller's doc.transact, so it shares the caller's origin) to the
+     * top-level keys whose doc value differs from what the flush wrote: the
+     * caller's own writes. Returns undefined when the batch cannot be
+     * narrowed (the scoped child was replaced or removed after the flush).
+     */
+    const getForeignKeys = (
+      events: yjs.YEvent<yjs.AbstractType<unknown>>[],
+      ownFlush: OwnFlush
+    ): Set<string> | undefined => {
+      const { dataMap, state } = ownFlush;
+
+      if (getDataMap() !== dataMap) {
+        return undefined;
+      }
+
+      const changedKeys = new Set<string>();
+
+      for (const event of events) {
+        if (scopeKey !== undefined && event.path.length === 0) {
+          // The scoped child itself was placed in this transaction. Yjs raises
+          // no events inside a type created in the same transaction, so every
+          // key it holds is a candidate.
+          if (event.changes.keys.has(scopeKey)) {
+            for (const key of dataMap.keys()) {
+              changedKeys.add(key);
+            }
+          }
+        } else if (scopeKey === undefined || String(event.path[0]) === scopeKey) {
+          const storePath = scopeKey === undefined ? event.path : event.path.slice(1);
+
+          if (storePath.length > 0) {
+            changedKeys.add(String(storePath[0]));
+          } else {
+            for (const key of event.changes.keys.keys()) {
+              changedKeys.add(key);
+            }
+          }
+        }
+      }
+
+      const foreignKeys = new Set<string>();
+
+      for (const key of changedKeys) {
+        const value = dataMap.get(key);
+        const isFlushed = dataMap.has(key)
+          ? Object.hasOwn(state, key) && isDeepEqualForDiff(
+            state[key],
+            value instanceof yjs.AbstractType ? value.toJSON() : value
+          )
+          : !Object.hasOwn(state, key);
+
+        if (!isFlushed) {
+          foreignKeys.add(key);
+        }
+      }
+
+      return foreignKeys;
+    };
+
     rootMap.observeDeep((events: yjs.YEvent<yjs.AbstractType<unknown>>[], transaction) => {
       if (isObsolete) {
         return;
@@ -820,6 +923,16 @@ const yjsImpl: YjsImpl = <S>(
         return;
       }
 
+      // A flush made inside a caller's doc.transact shares the caller's
+      // origin, so the origin checks below would take it for a remote write.
+      // Narrow such a batch to the caller's writes; none means a local echo.
+      const ownFlush = transaction.meta.get(api) as OwnFlush | undefined;
+      const foreignKeys = ownFlush === undefined ? undefined : getForeignKeys(events, ownFlush);
+
+      if (foreignKeys?.size === 0) {
+        return;
+      }
+
       // 2. Initial Load Handling (unchanged behaviour).
       if (!isLoaded && transaction.origin !== api) {
         isLoaded = true;
@@ -833,9 +946,18 @@ const yjsImpl: YjsImpl = <S>(
         return;
       }
 
-      // Scoped inbound: collect the affected top-level keys across the
-      // microtask batch. Key positions shift by one level under `scope`.
-      if (scopedDiff) {
+      if (scopedDiff && foreignKeys !== undefined) {
+        // Only the caller's writes are inbound: the store already holds what
+        // it flushed itself.
+        pendingInboundKeys = pendingInboundKeys ?? new Set<string>();
+
+        for (const key of foreignKeys) {
+          pendingInboundKeys.add(key);
+        }
+        hasShallowInboundEvent = true;
+      } else if (scopedDiff) {
+        // Scoped inbound: collect the affected top-level keys across the
+        // microtask batch. Key positions shift by one level under `scope`.
         pendingInboundKeys = pendingInboundKeys ?? new Set<string>();
         const keys = pendingInboundKeys;
 
