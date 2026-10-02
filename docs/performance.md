@@ -181,6 +181,14 @@ is not a change list.
 `bench/nested-lists.ts`. Timings are medians of five in-process interleaved
 A/B runs on a loaded shared machine and vary ±20%; the counters are exact.)
 
+The `getChanges` call counts above predate §20. Since §20 a record diff
+recurses into every non-identical record child instead of prefiltering it
+with the equality helper, and a doc snapshot shares no references with
+state, so the integrated page turn makes one `getChanges` call per record
+node: 33 / 123 at 10 / 40 books. Each is a single pass, so the flush reads
+the tree once in total (the §20 legacy-flush row: 148,604 property reads for
+a change in any book, the same as diffing an unchanged tree).
+
 The win is in the default full-tree mode, ~1.3–1.6× per nested write. Under
 `scopedDiff` the diff is already confined to the changed branch, so it only
 saves one serialization and one re-diff per changed Y.Array element; the
@@ -607,6 +615,12 @@ more than 4× the time once GC joins in); the after column grows with n.
 At today's library sizes (tens to hundreds of books) the old cost was at
 most ~15 ms; the win is for id-keyed maps with thousands of entries.
 
+With §12 also in place, the deep-route and key-scoped-route rows of this
+bench are delete events on a `Y.Map`, which now take the key-path route:
+one filter pass over the record, 1,500 enumerated entries for 500 of 1,000
+books and 3,000 for 1,000 of 2,000. The `patchState`, legacy-route and
+hydration cases still go through `applyChangesToObject`.
+
 ### 15. Text diffs computed and thrown away (string writes)
 
 The record and array differs built a nested change list for every unequal
@@ -990,7 +1004,8 @@ Every diff and `patchState` row now reads what an unchanged diff reads. The
 legacy flush still reads about 2× the tree for a change in any book, because
 `patchSharedType` re-diffed at each pending level, which is a separate cost
 (§5's change-list threading, developed in parallel, removes that re-diff;
-these numbers predate it).
+these numbers predate it). With both in place the legacy flush reads 148,604
+for a change in the first or the last book: 1.00× an unchanged diff.
 Unchanged trees read exactly what they read before and got a little cheaper
 on wide records, because `Object.keys` replaces `Object.entries`: the
 unchanged 1,000-entry record diffs in 0.85 ms instead of 1.05 ms and
