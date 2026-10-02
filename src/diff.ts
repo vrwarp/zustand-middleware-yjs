@@ -255,7 +255,7 @@ const isEveryElementEqualForDiff = (a: unknown[], b: unknown[]): boolean => {
   return a.every((left, index) => {
     const right = b[index];
 
-    if (left === right) {
+    if (Object.is(left, right)) {
       return right !== undefined && typeof right !== "function";
     }
 
@@ -271,10 +271,10 @@ const isEveryElementEqualForDiff = (a: unknown[], b: unknown[]): boolean => {
  * building change lists. Mirrors getChanges' quirks on purpose: a
  * function-valued key missing from `b` does not count as a difference,
  * `b`'s array elements compare in their stored form (toYArrayElements), and
- * non-diffable values (including NaN) compare by strict equality.
+ * non-diffable values compare by `Object.is` (so an unchanged NaN is equal).
  */
 const isDeepEqualForDiff = (a: unknown, b: unknown): boolean => {
-  if (a === b) {
+  if (Object.is(a, b)) {
     return true;
   }
 
@@ -284,8 +284,8 @@ const isDeepEqualForDiff = (a: unknown, b: unknown): boolean => {
 
   /*
    * Hot path: this runs for every element of every diffed array and every key
-   * of every diffed record, so the per-field cost matters. `===` is checked
-   * before any type classification (most fields are primitives), and
+   * of every diffed record, so the per-field cost matters. `Object.is` is
+   * checked before any type classification (most fields are primitives), and
    * Object.keys/every are used instead of Object.entries/for-of to avoid
    * per-field tuple and iterator allocations.
    */
@@ -321,7 +321,7 @@ const isDeepEqualForDiff = (a: unknown, b: unknown): boolean => {
       const other = a[property];
       const value = b[property];
 
-      if (other === value) {
+      if (Object.is(other, value)) {
         return true;
       }
 
@@ -352,7 +352,7 @@ const getMatchingRunLength = (
     const right = b[bStart + length];
 
     if (
-      left !== right &&
+      !Object.is(left, right) &&
       !(isDiffable(left) && isDiffable(right) && isSameType(left, right) && isDeepEqualForDiff(left, right))
     ) {
       break;
@@ -475,7 +475,7 @@ const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOpt
     for (let k = 0; k <= LOOKAHEAD_WINDOW; k = k + 1) {
       if (bIndex + k < b.length) {
         const bValue = b[bIndex + k];
-        const isStrictMatch = value === bValue;
+        const isStrictMatch = Object.is(value, bValue);
         const isDeepMatch =
           !isStrictMatch &&
           isDiffable(value) &&
@@ -505,7 +505,7 @@ const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOpt
 
       if (k > 0 && index + k < a.length) {
         const nextA = a[index + k];
-        const isStrictMatch = nextA === b[bIndex];
+        const isStrictMatch = Object.is(nextA, b[bIndex]);
         const isDeepMatch =
           !isStrictMatch &&
           isDiffable(nextA) &&
@@ -700,7 +700,7 @@ const getRecordChanges = (a: Record<string, unknown>, b: Record<string, unknown>
       if (!isDeepEqualForDiff(a[property], value)) {
         changeList.push([changeType.pending, property, getChanges(a[property], value)]);
       }
-    } else if (a[property] !== value) {
+    } else if (!Object.is(a[property], value)) {
       changeList.push([changeType.update, property, value]);
     }
   }
