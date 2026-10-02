@@ -31,8 +31,15 @@ import { performance } from "node:perf_hooks";
 import * as yjs from "yjs";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import yjsMiddleware, { __scopedDiffDevSampling, getYjsStoreHandle } from "../src";
-import { computeInboundStateForPaths, type InboundPath, minimizeInboundPaths, patchSharedType } from "../src/patching";
-import { bench } from "./harness";
+import {
+  computeInboundState,
+  computeInboundStateForPaths,
+  type InboundPath,
+  minimizeInboundPaths,
+  patchSharedType,
+  patchState,
+} from "../src/patching";
+import { bench, type BenchResult } from "./harness";
 
 export interface ReadingSession {
   cfiRange: string;
@@ -1545,4 +1552,174 @@ export const runColdStartRepresentationBench = ({
     "",
     fidelityLine,
   ].join("\n");
+};
+
+/*
+ * Cold-start hydration, decomposed.
+ *
+ * Attaching a store to an already-populated document (every app launch, once
+ * per store) runs Y.Map#toJSON() over the whole tree and then
+ * computeInboundState, which first walks the WHOLE doc JSON again with the
+ * inbound sanitize check (isSafeDocJson via sanitizeDocJson) before patching.
+ * With an empty initial branch the patch itself is O(top-level branches) —
+ * an absent branch is inserted whole — so on this path computeInboundState is
+ * almost entirely the sanitize walk. The same walk runs on every key-scoped
+ * and legacy inbound batch (over the subtree read) and on every deep-path
+ * read.
+ *
+ * The walk's per-node cost is the issue: an `.every` closure per array and
+ * record, an Object.keys per record, and a recursive call (with its own
+ * type dispatch) for every PRIMITIVE leaf, which outnumber containers
+ * ~5:1 in this tree. The deterministic counters (one untimed pass) make that
+ * visible without timing: `isArrayCalls` ~= all nodes + records (one per
+ * visited node, one more per record) and `everyCalls` ~= containers, where a
+ * walk that only recurses into objects needs ~1 per container and no
+ * closures.
+ */
+
+interface JsonShape {
+  records: number;
+  arrays: number;
+  primitiveLeaves: number;
+}
+
+const countJsonShape = (json: unknown): JsonShape => {
+  const shape: JsonShape = { "records": 0, "arrays": 0, "primitiveLeaves": 0 };
+  const stack: unknown[] = [json];
+
+  while (stack.length > 0) {
+    const node = stack.pop();
+
+    if (Array.isArray(node)) {
+      shape.arrays = shape.arrays + 1;
+      stack.push(...(node as unknown[]));
+    } else if (typeof node === "object" && node !== null) {
+      shape.records = shape.records + 1;
+      stack.push(...Object.values(node as Record<string, unknown>));
+    } else {
+      shape.primitiveLeaves = shape.primitiveLeaves + 1;
+    }
+  }
+
+  return shape;
+};
+
+/**
+ * Counts calls to `owner[method]` while `run` executes (untimed; the wrapper
+ * itself would distort timings). Restores the original even if `run` throws.
+ *
+ * @param owner - The object holding the method (e.g. Array, Array.prototype).
+ * @param method - The method name to count.
+ * @param run - The work to observe.
+ * @returns The number of calls made during `run`.
+ */
+const countCalls = (owner: object, method: string, run: () => void): number => {
+  const original = (owner as Record<string, unknown>)[method] as (...args: unknown[]) => unknown;
+  let calls = 0;
+
+  Object.defineProperty(owner, method, {
+    "configurable": true,
+    "value": function counted(this: unknown, ...args: unknown[]): unknown {
+      calls = calls + 1;
+
+      return original.apply(this, args);
+    },
+    "writable": true,
+  });
+
+  try {
+    run();
+  } finally {
+    Object.defineProperty(owner, method, { "configurable": true, "value": original, "writable": true });
+  }
+
+  return calls;
+};
+
+export interface ColdStartSanitizeRow {
+  result: BenchResult;
+  meta: Record<string, string | number>;
+}
+
+/**
+ * Benchmarks cold-start hydration of a versicle-shaped `progress` store at
+ * one library scale, split into the Yjs serialization, the middleware's
+ * computeInboundState (sanitize walk + O(branches) patch), the same patch
+ * without the sanitize walk, and the end-to-end createStore.
+ *
+ * @param books - Number of books in the progress tree.
+ * @param runs - Timed runs per row (median reported).
+ * @returns One row per measured stage, with deterministic counters as meta.
+ */
+export const benchColdStartSanitize = (books: number, runs: number): ColdStartSanitizeRow[] => {
+  const update = yjs.encodeStateAsUpdate(makeFixture(books, 300).doc);
+  const makeReplica = (): yjs.Doc => {
+    const replica = new yjs.Doc();
+
+    yjs.applyUpdate(replica, update);
+
+    return replica;
+  };
+  const map = makeReplica().getMap("progress");
+  const json = map.toJSON() as Record<string, unknown>;
+  const syncedKeys = new Set(["progress"]);
+  const emptyState = { "progress": {} };
+  const hydrateOnce = (): void => {
+    computeInboundState(emptyState, json, { syncedKeys });
+  };
+
+  const shape = countJsonShape(json);
+  const isArrayCalls = countCalls(Array, "isArray", hydrateOnce);
+  const everyCalls = countCalls(Array.prototype, "every", hydrateOnce);
+  const label = `cold-start/versicle ${String(books)} books`;
+  const options = { runs, "warmupRuns": 2 };
+
+  // Array-literal order is evaluation order: the rows run top to bottom.
+  return [
+    {
+      "result": bench(`${label}: map.toJSON() (Yjs serialization)`, () => { map.toJSON(); }, options),
+      "meta": { books },
+    },
+    {
+      "result": bench(`${label}: computeInboundState(empty, json) (sanitize walk + patch)`, hydrateOnce, options),
+      "meta": {
+        books,
+        "records": shape.records,
+        "arrays": shape.arrays,
+        "primitiveLeaves": shape.primitiveLeaves,
+        isArrayCalls,
+        everyCalls,
+      },
+    },
+    {
+      "result": bench(
+        `${label}: patchState only (computeInboundState minus sanitize)`,
+        () => { patchState<unknown>(emptyState, { "progress": json.progress }); },
+        options
+      ),
+      "meta": { books },
+    },
+    {
+      "result": bench(
+        `${label}: createStore on populated doc (end-to-end hydration)`,
+        (fixture) => {
+          createStore<ProgressState>()(
+            yjsMiddleware(
+              fixture as yjs.Doc,
+              "progress",
+              (): ProgressState => {
+                return {
+                  "progress": {},
+                  "updateReadingSession": () => { /* passive */ },
+                };
+              },
+              { "disableYText": true, "scopedDiff": true, "syncedKeys": ["progress"] }
+            )
+          );
+        },
+        { ...options, "setup": makeReplica }
+      ),
+      "meta": { books },
+    },
+  ];
 };

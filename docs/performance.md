@@ -1106,6 +1106,29 @@ middleware can do on its own. The floor covers only what the store
 replicates: a `syncedKeys` store does not materialize the keys it ignores
 (§17).
 
+One part of it was trimmed: the sanitize walk. Every inbound doc read
+(this hydration, the key-scoped and legacy inbound routes, deep-path reads)
+re-walks the JSON `toJSON()` returned, rejecting injected prototypes and
+dangerous keys (`isSafeDocJson`). The walk made a recursive call for every
+primitive leaf (about five per container in this tree) and allocated an
+`.every` closure per container. It now recurses only into objects, still
+checking every own key whatever its value. At 120 books (bench rows
+`cold-start/versicle`, §6c of `npm run bench`; medians of 6 interleaved
+process rounds, and of 15 fresh processes per side for the cold row):
+
+| 120 books | before | after |
+|---|---:|---:|
+| `computeInboundState(empty, json)` (≈ the walk) | 26.7 ms | 12.1 ms |
+| the same, JIT-cold (one shot in a fresh process) | 44.9 ms | 36.8 ms |
+| `Array.isArray` calls per pass | 518,186 | 145,221 |
+| `.every` closures per pass | 72,845 | 0 |
+
+`map.toJSON()` is untouched (~90-100 ms on either side) and remains the bulk
+of the floor. This is a constant factor, linear in state size (6.1 → 2.8 ms
+at 40 books), not a change to the floor: about a tenth of this store's
+middleware hydration warm, and under 1% of its total cold load once Yjs
+`applyUpdate` of the 14.8 MB update (~1.7 s cold) is counted.
+
 ## Aged-document session (end-to-end)
 
 500 edits (mostly 8-char insertions, 20% 40-char deletions) against a
@@ -1182,7 +1205,7 @@ run-to-run.)
 
 ## Regression coverage
 
-Seventeen structural test suites lock the fixes in without flaky wall-clock
+Eighteen structural test suites lock the fixes in without flaky wall-clock
 assertions:
 
 - `src/text-performance.spec.ts` — Y.Text run coalescing (item counts per
@@ -1337,3 +1360,11 @@ assertions:
   nothing; and a fast-check property running `patchStore` on deep-frozen
   state, which pins that the inbound patch never writes to the state it
   reads and keeps its identity exactly when nothing replicated changed.
+- `src/sanitize-walk-cost.spec.ts` — the inbound sanitize walk recurses
+  only into objects: with the container shape held fixed, 4x the primitive
+  leaves must not grow its type dispatch (`Array.isArray` calls) by more
+  than 1.25x, on `computeInboundState` and on creation hydration in both
+  modes. The semantics it must keep are pinned by
+  `src/proto-injection-inbound.spec.ts`, including primitive-valued
+  "constructor"/"prototype" entries, which a walk that skipped primitive
+  values before checking the key would let into store state.

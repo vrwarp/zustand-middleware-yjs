@@ -120,10 +120,21 @@ const isClassInstance = (value: object): boolean => {
  * Whether doc JSON can enter store state as-is: every record, at any depth,
  * has Object.prototype as its prototype and no dangerous key, and no record
  * holds a `jsonElementKeys` array. Class instances are leaves.
+ *
+ * Runs over every inbound doc read (cold-start hydration included), so it
+ * recurses only into objects: a primitive leaf cannot be unsafe, and leaves
+ * outnumber containers several to one. The key check still runs on every
+ * own key, whatever its value: a primitive "constructor" is unsafe too.
  */
 const isSafeDocJson = (json: unknown, jsonElementKeys: readonly string[]): boolean => {
   if (Array.isArray(json)) {
-    return json.every((item) => isSafeDocJson(item, jsonElementKeys));
+    for (const item of json) {
+      if (typeof item === "object" && item !== null && !isSafeDocJson(item, jsonElementKeys)) {
+        return false;
+      }
+    }
+
+    return true;
   }
   if (!isPlainRecord(json)) {
     return true;
@@ -132,13 +143,25 @@ const isSafeDocJson = (json: unknown, jsonElementKeys: readonly string[]): boole
     return isClassInstance(json);
   }
 
-  return Object.keys(json).every((key) => {
+  for (const key of Object.keys(json)) {
+    if (isDangerousKey(key)) {
+      return false;
+    }
+
     const value = json[key];
 
-    return !isDangerousKey(key) &&
-      !(Array.isArray(value) && jsonElementKeys.includes(key)) &&
-      isSafeDocJson(value, jsonElementKeys);
-  });
+    if (typeof value === "object" && value !== null) {
+      // A listed array's elements must be copied (see sanitizeDocJson).
+      if (jsonElementKeys.includes(key) && Array.isArray(value)) {
+        return false;
+      }
+      if (!isSafeDocJson(value, jsonElementKeys)) {
+        return false;
+      }
+    }
+  }
+
+  return true;
 };
 
 /**

@@ -44,7 +44,13 @@ import { runNoopInboundBench } from "./noop-inbound";
 import { formatRecordDeleteReport, runRecordDeleteBench } from "./record-delete";
 import { runRecordDiffBench } from "./record-diff";
 import { runStringDiffBench } from "./string-diffs";
-import { runColdStartRepresentationBench, runInboundBulkBench, runSharedMapBench, runVersicleBench } from "./versicle";
+import {
+  benchColdStartSanitize,
+  runColdStartRepresentationBench,
+  runInboundBulkBench,
+  runSharedMapBench,
+  runVersicleBench,
+} from "./versicle";
 import { runYArrayRunsBench } from "./yarray-runs";
 
 // Deterministic perf runs: disable the DEV-only sampled convergence check so
@@ -496,6 +502,23 @@ console.error("  running string-write scenarios...");
 
 for (const result of runStringDiffBench()) {
   record(result, result.meta ?? {});
+}
+
+/* -------------------------------------------------------------------------
+ * 6c. Cold-start hydration, decomposed (versicle-shaped progress tree):
+ * Yjs toJSON() vs the inbound doc-JSON sanitize walk in computeInboundState.
+ * The meta columns carry deterministic counters from one untimed pass:
+ * isArrayCalls ~= (records + arrays + primitiveLeaves) + records means the
+ * walk recurses into every primitive leaf; everyCalls = one closure per
+ * container.
+ * ---------------------------------------------------------------------- */
+
+for (const books of [40, 120]) {
+  console.error(`  running cold-start sanitize decomposition: ${String(books)} books...`);
+
+  for (const { result, meta } of benchColdStartSanitize(books, 7)) {
+    record(result, meta);
+  }
 }
 
 /* -------------------------------------------------------------------------

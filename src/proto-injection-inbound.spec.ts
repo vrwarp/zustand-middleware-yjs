@@ -251,3 +251,87 @@ describe("inbound remote '__proto__' Y.Map entries are ignored", () => {
     expectNoInjectedPrototype(store.getState());
   });
 });
+
+/*
+ * "constructor" and "prototype" are dangerous keys too, but toJSON assigns
+ * them as ordinary own properties. The sanitize walk must drop them whatever
+ * their value: a walk that skips primitive values before checking the key
+ * lets `constructor: "x"` through on every route that inserts doc JSON whole.
+ */
+describe("inbound remote 'constructor' / 'prototype' entries with primitive values are ignored", () => {
+  /** A Y.Map{ constructor: "x", prototype: 7, b: 1 }, to be integrated by the caller. */
+  const makeDangerousRecord = (): Y.Map<unknown> => {
+    const record = new Y.Map<unknown>();
+
+    record.set("constructor", "x");
+    record.set("prototype", 7);
+    record.set("b", 1);
+
+    return record;
+  };
+
+  /** A remote doc holding an empty users map. */
+  const makeRemote = (): { remote: Y.Doc; users: Y.Map<unknown> } => {
+    const remote = new Y.Doc();
+    const users = new Y.Map<unknown>();
+
+    remote.getMap("store").set("users", users);
+
+    return { remote, users };
+  };
+
+  const ownKeys = (value: unknown): string[] => Object.keys(value as object);
+
+  describe.each([
+    ["full", false],
+    ["scopedDiff", true],
+  ])("%s", (unused, scopedDiff) => {
+    it("drops them when hydrating an absent branch at creation", () => {
+      const local = new Y.Doc();
+      const { remote, users } = makeRemote();
+
+      users.set("bob", makeDangerousRecord());
+      Y.applyUpdate(local, Y.encodeStateAsUpdate(remote));
+
+      const store = createStore<State>()(yjs(local, "store", creator, { scopedDiff }));
+
+      expect(ownKeys(store.getState().users.bob)).toEqual(["b"]);
+    });
+
+    it("drops them from an inbound patch of a top-level key", async () => {
+      const local = new Y.Doc();
+      const { remote, users } = makeRemote();
+
+      Y.applyUpdate(local, Y.encodeStateAsUpdate(remote));
+
+      const store = createStore<State>()(yjs(local, "store", creator, { scopedDiff }));
+      const before = Y.encodeStateVector(local);
+
+      // An event on users itself: the key-scoped route under scopedDiff.
+      users.set("bob", makeDangerousRecord());
+      Y.applyUpdate(local, Y.encodeStateAsUpdate(remote, before));
+      await drainInbound();
+
+      expect(ownKeys(store.getState().users.bob)).toEqual(["b"]);
+    });
+
+    it("drops them from an inbound patch of a nested branch", async () => {
+      const local = new Y.Doc();
+      const { remote, users } = makeRemote();
+      const bob = new Y.Map<unknown>();
+
+      users.set("bob", bob);
+      Y.applyUpdate(local, Y.encodeStateAsUpdate(remote));
+
+      const store = createStore<State>()(yjs(local, "store", creator, { scopedDiff }));
+      const before = Y.encodeStateVector(local);
+
+      // An event on users.bob: the deep-path route under scopedDiff.
+      bob.set("profile", makeDangerousRecord());
+      Y.applyUpdate(local, Y.encodeStateAsUpdate(remote, before));
+      await drainInbound();
+
+      expect(ownKeys(store.getState().users.bob?.profile)).toEqual(["b"]);
+    });
+  });
+});
