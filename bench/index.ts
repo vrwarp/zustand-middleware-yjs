@@ -15,6 +15,8 @@
  * 4. Full-tree vs scoped outbound flush; inbound patch cost.
  * 5. String writes whose nested text diff is computed and thrown away
  *    (bench/string-diffs.ts).
+ * 6. Inbound catch-up observer cost: many in-place edits to elements of a
+ *    large object array arriving in one tick (bench/inbound-catchup.ts).
  *
  * Run with: npm run bench
  */
@@ -31,6 +33,7 @@ import {
   makeRandom,
   randomText,
 } from "./harness";
+import { runInboundCatchUpBench } from "./inbound-catchup";
 import { runInboundChildKeyBench } from "./inbound-child-keys";
 import { runInboundMixedBatchBench } from "./inbound-mixed-batch";
 import { formatRecordDeleteReport, runRecordDeleteBench } from "./record-delete";
@@ -717,6 +720,13 @@ runRecordDeleteBench()
   .then((recordDeleteResults) => {
     // eslint-disable-next-line no-console
     console.log(`\n${formatRecordDeleteReport(recordDeleteResults)}`);
+    console.error("  running inbound catch-up scenario...");
+
+    return runInboundCatchUpBench();
+  })
+  .then((report) => {
+    // eslint-disable-next-line no-console
+    console.log(`\n${report}`);
     console.error("  running versicle-shaped aging scenario...");
 
     return runVersicleBench();

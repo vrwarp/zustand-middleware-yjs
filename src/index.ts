@@ -9,12 +9,14 @@ import {
   assertScopedDiffConvergence,
   computeInboundState,
   computeInboundStateForPaths,
+  getEventPathWithoutIndices,
   type InboundPath,
   patchSharedType,
   patchSharedTypeScoped,
   patchStore,
   pickMapJson,
   truncateAtArrayIndex,
+  UNCOUNTED_ARRAY_INDEX,
 } from "./patching";
 
 /**
@@ -905,6 +907,25 @@ const yjsImpl: YjsImpl = <S>(
     };
 
     /**
+     * The root-relative path of an event's target. Each filter below reads
+     * it once per event instead of `event.path`, which Yjs recomputes on
+     * every read at O(index) per array ancestor (see
+     * getEventPathWithoutIndices). Array positions hold a placeholder, since
+     * every reader cuts the path at its first array index anyway, except
+     * where a position is read as a key: the top-level key and, below this
+     * store's scope key, the store key. Only a degenerate doc has an array
+     * there (a scope key holding a Y.Array, say), and it takes `event.path`
+     * for the real index.
+     */
+    const getEventPath = (event: yjs.YEvent<yjs.AbstractType<unknown>>): InboundPath => {
+      const path = getEventPathWithoutIndices(event);
+      const keySegments = scopeKey !== undefined && path[0] === scopeKey ? 2 : 1;
+      const firstIndex = path.indexOf(UNCOUNTED_ARRAY_INDEX);
+
+      return firstIndex === -1 || firstIndex >= keySegments ? path : event.path;
+    };
+
+    /**
      *
      * Scope relevance filter: without scoping every event is relevant; with
      * scoping only transactions touching scope.key reach the store (deep
@@ -913,10 +934,13 @@ const yjsImpl: YjsImpl = <S>(
      */
     const touchesScope = (events: yjs.YEvent<yjs.AbstractType<unknown>>[]): boolean =>
       { return scopeKey === undefined ||
-      events.some((event) =>
-        { return event.path.length > 0
-          ? String(event.path[0]) === scopeKey
-          : event.changes.keys.has(scopeKey) }) };
+      events.some((event) => {
+        const path = getEventPath(event);
+
+        return path.length > 0
+          ? String(path[0]) === scopeKey
+          : event.changes.keys.has(scopeKey);
+      }) };
 
     /**
      *
@@ -939,7 +963,9 @@ const yjsImpl: YjsImpl = <S>(
       const changedKeys = new Set<string>();
 
       for (const event of events) {
-        if (scopeKey !== undefined && event.path.length === 0) {
+        const path = getEventPath(event);
+
+        if (scopeKey !== undefined && path.length === 0) {
           // The scoped child itself was placed in this transaction. Yjs raises
           // no events inside a type created in the same transaction, so every
           // key it holds is a candidate.
@@ -948,8 +974,8 @@ const yjsImpl: YjsImpl = <S>(
               changedKeys.add(key);
             }
           }
-        } else if (scopeKey === undefined || String(event.path[0]) === scopeKey) {
-          const storePath = scopeKey === undefined ? event.path : event.path.slice(1);
+        } else if (scopeKey === undefined || String(path[0]) === scopeKey) {
+          const storePath = scopeKey === undefined ? path : path.slice(1);
 
           if (storePath.length > 0) {
             changedKeys.add(String(storePath[0]));
@@ -1077,36 +1103,38 @@ const yjsImpl: YjsImpl = <S>(
         };
 
         /*
-         * `event.path` is relative to the ROOT map, so under `scope` the
+         * The event path is relative to the ROOT map, so under `scope` the
          * store-relative path is the tail after the scope segment. An event
          * on the store root itself (a top-level key added, replaced or
          * deleted) makes that key shallow: the key-scoped patch reconciles
          * that whole key and applies the merge-defaults delete suppression.
          */
         for (const event of events) {
+          const eventPath = getEventPath(event);
+
           if (scopeKey === undefined) {
-            if (event.path.length > 0) {
-              collectBranchEvent(event, event.path);
+            if (eventPath.length > 0) {
+              collectBranchEvent(event, eventPath);
             } else {
               for (const key of event.changes.keys.keys()) {
                 keys.add(key);
                 shallowKeys.add(key);
               }
             }
-          } else if (event.path.length === 0) {
+          } else if (eventPath.length === 0) {
             // The scoped child itself was inserted/replaced/deleted on the root
             // map: fall back to a full inbound patch for this batch.
             if (event.changes.keys.has(scopeKey)) {
               hasPendingInboundFull = true;
             }
-          } else if (String(event.path[0]) === scopeKey) {
-            if (event.path.length === 1) {
+          } else if (String(eventPath[0]) === scopeKey) {
+            if (eventPath.length === 1) {
               for (const key of event.changes.keys.keys()) {
                 keys.add(key);
                 shallowKeys.add(key);
               }
             } else {
-              collectBranchEvent(event, event.path.slice(1));
+              collectBranchEvent(event, eventPath.slice(1));
             }
           }
         }

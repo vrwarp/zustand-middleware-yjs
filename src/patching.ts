@@ -1704,6 +1704,36 @@ export const truncateAtArrayIndex = (path: InboundPath): InboundPath => {
   return index === -1 ? path : path.slice(0, index);
 };
 
+/** What `getEventPathWithoutIndices` puts where `event.path` has an index. */
+export const UNCOUNTED_ARRAY_INDEX = -1;
+
+/**
+ * `event.path` with every array index replaced by `UNCOUNTED_ARRAY_INDEX`:
+ * same length, same map keys, so `truncateAtArrayIndex` cuts both at the
+ * same place.
+ *
+ * Why: Yjs does not cache `YEvent#path`. Every read runs getPathTo, which
+ * counts each array ancestor's items from its start up to the child,
+ * tombstones included — O(index) per read, for an index the inbound
+ * observer only cuts away. A catch-up of edits to the elements of a large
+ * or aged object array paid that several times per event. This is the same
+ * parent walk without the count: O(depth).
+ */
+export const getEventPathWithoutIndices = (
+  event: yjs.YEvent<yjs.AbstractType<unknown>>
+): InboundPath => {
+  const path: (string | number)[] = [];
+  let child: yjs.AbstractType<unknown> = event.target;
+
+  // Same walk and stop condition as getPathTo(event.currentTarget, target).
+  while (child._item !== null && child !== event.currentTarget) {
+    path.unshift(child._item.parentSub ?? UNCOUNTED_ARRAY_INDEX);
+    child = child._item.parent as yjs.AbstractType<unknown>;
+  }
+
+  return path;
+};
+
 /**
  * Options for computeInboundStateForPaths.
  */

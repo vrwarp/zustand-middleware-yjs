@@ -834,6 +834,62 @@ Limits:
   client without the option still converges, but rewrites any element it
   changes as a Y.Map.
 
+### 19. The inbound observer paid for array indices it threw away
+
+Yjs does not cache `YEvent#path`: every read runs `getPathTo`, which, for
+each array ancestor of the changed type, walks the parent's item list from
+its start up to the child, tombstones included. The inbound observer read it
+three times per event under `scopedDiff` (seven with `scope`, and twice in
+the scope filter even without `scopedDiff`), then cut the path at its first
+array index (§11) — discarding the index it had just paid for. Editing the
+elements of an object array in place (a todo, annotation or bookmark list)
+therefore cost O(index) per read, and a catch-up of many such edits
+O(events × reads × array length). It grows with the array's age too:
+deleted Y.Map elements stay in the list as tombstones, so 6,000 removed
+annotations cost as much as 6,000 live ones.
+
+**Fix:** `getEventPathWithoutIndices` walks the target's parent chain once
+per event — O(depth) — recording map keys and a placeholder for each array
+position. It has the same length and keys as `event.path`, so every check
+and `truncateAtArrayIndex` see the same thing. The one spot where a position
+is read as a key (a degenerate doc whose scope key holds an array) still
+reads `event.path` for the real index. This is the middleware's first use of
+Yjs internals (`_item`, `parent`, `parentSub`; typed in Yjs' declarations and
+stable across 13.x), so a fast-check property pins the walk to `event.path`:
+a Yjs upgrade that changes them fails a test, not a user.
+
+Observer phase (every `applyUpdate` of the catch-up; the store patch runs
+untimed), 1,000 in-place edits to elements of a Y.Array of Y.Maps, medians of
+5 interleaved A/B runs:
+
+| catch-up | before | after | bare doc |
+|---|---:|---:|---:|
+| 1,000 transactions, 2,000 live, `scopedDiff` | 148 ms | 24 ms | 33 ms |
+| 1,000 transactions, 8,000 live, `scopedDiff` | 616 ms | 25 ms (25×) | 20 ms |
+| 1,000 transactions, 2,000 live + 6,000 tombstones, `scopedDiff` | 603 ms | 34 ms (18×) | — |
+| 1,000 transactions, 8,000 live, `scope` (legacy diff) | 401 ms | 24 ms (17×) | — |
+| 1,000 transactions, 8,000 live, `scope` + `scopedDiff` | 1,234 ms | 31 ms (39×) | — |
+| one merged transaction, 8,000 live, `scopedDiff` | 1,237 ms | 669 ms (1.8×) | 729 ms |
+
+The deterministic counters tell the same story: at 8,000 elements the
+middleware's own path reads drop from 3,000 (7,000 with `scope`) to zero and
+the list items walked from 12.1 M (28.3 M) to the bare doc's 31,000. A
+catch-up of separate transactions now costs what Yjs alone costs. For a live
+peer, the saving is per remote element edit: 0.12 ms at 2,000 elements,
+0.6 ms at 8,000 (1.2 ms with `scope`), and 0.57 ms at 2,000 live elements
+plus 6,000 tombstones — growing with array length and age.
+
+**Remaining floor: single-transaction catch-ups.** Providers normally apply
+a catch-up as ONE transaction (y-cinder batches, y-idb's load, y-websocket's
+sync step 2). Before calling any deep observer, Yjs sorts each ancestor's
+events by `event.path.length`: about two path computations per event per
+ancestor (3,996 for these 1,000 events), each O(index) — O(events × index),
+and outside the middleware's reach. The fix removes only the middleware's
+share (the 1.8× above): a merged catch-up now costs what it costs a bare doc
+(669 vs 729 ms, within noise). Collections that are large, edited in place
+and long-lived are still better modelled as id-keyed records: map keys have
+no index to count.
+
 ## Downstream-shaped aging scenario (one hot top-level key)
 
 `bench/versicle.ts` models the shape §9 and §10 were found in: a single
@@ -965,7 +1021,10 @@ run-to-run.)
   splice in it still degrades to element-wise updates (applied as one ranged
   rewrite since §16, but every rewritten element becomes a new item); prefer
   id-keyed objects for collections with heavy mid-list churn that cannot
-  preserve identity.
+  preserve identity. On the receiving side, a catch-up of edits to the
+  elements of a large, long-lived array still pays Yjs' own O(index) event
+  sort per edited element when it arrives as one transaction (§19); id-keyed
+  objects avoid it.
 - **Long-lived documents:** Yjs garbage-collects tombstone *content* but not
   item metadata. If a document has accumulated years of history you no longer
   need, snapshot the state into a fresh doc (a schema-version bump via
@@ -973,7 +1032,7 @@ run-to-run.)
 
 ## Regression coverage
 
-Thirteen structural test suites lock the fixes in without flaky wall-clock
+Fourteen structural test suites lock the fixes in without flaky wall-clock
 assertions:
 
 - `src/text-performance.spec.ts` — Y.Text run coalescing (item counts per
@@ -1094,3 +1153,11 @@ assertions:
     and edit sequences;
   - convergence with clients without the option, and of concurrent appends
     and concurrent replacements.
+- `src/observer-event-path.spec.ts` — the §19 fix: `Item#deleted` and
+  `YEvent#path` getter spies (net of a bare doc receiving the same updates)
+  proving the observer walks O(1) list items per event however long or aged
+  the array (`scopedDiff`, `scope`, both, a single merged update) and reads
+  `event.path` neither in the observer nor in the batched patch, plus a
+  fast-check property pinning `getEventPathWithoutIndices` to `event.path`
+  (random nested map/array edits with tombstones, local and remote, at the
+  doc root and at a nested root).
