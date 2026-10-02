@@ -550,3 +550,28 @@ describe("bulk child-key batches stay linear", () => {
     expect(fastest.dropMany / Math.max(fastest.dropOne, 0.05)).toBeLessThanOrEqual(8);
   });
 });
+
+describe("key-path removals", () => {
+  it("keep an own \"__proto__\" key as data, never as the prototype", () => {
+    const doc = new yjs.Doc();
+    const root = doc.getMap<unknown>("root");
+    const books = new yjs.Map<unknown>();
+
+    doc.transact(() => {
+      root.set("books", books);
+      books.set("a", 1);
+    });
+
+    // JSON.parse (or persist rehydration) can put an own "__proto__" key in state.
+    const state = JSON.parse('{"books":{"__proto__":{"injected":true},"a":1,"b":2}}') as {
+      books: Record<string, unknown>;
+    };
+    const patched = computeInboundStateForPaths(state, root, [], { "keyPaths": [["books", "b"]] });
+
+    expect(patched).toBeDefined();
+    expect(Object.hasOwn(patched?.books ?? {}, "__proto__")).toBe(true);
+    expect(Object.getPrototypeOf(patched?.books)).toBe(Object.prototype);
+    expect(patched?.books.injected).toBeUndefined();
+    expect(Object.keys(patched?.books ?? {})).toEqual(["__proto__", "a"]);
+  });
+});

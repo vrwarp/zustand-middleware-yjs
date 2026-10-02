@@ -1542,14 +1542,13 @@ const applyChangedKeys = (
     return next;
   }
 
-  // Built by filtering rather than the delete operator.
-  const filtered: Record<string, unknown> = {};
+  // Built by filtering rather than the delete operator. Object.fromEntries
+  // keeps an own "__proto__" key as a data property, as applyChangesToObject
+  // does; plain assignment would set the prototype.
+  const filtered: Record<string, unknown> = Object.fromEntries(
+    Object.entries(next).filter(([key]) => !removedKeys.has(key))
+  );
 
-  for (const key of Object.keys(next)) {
-    if (!removedKeys.has(key)) {
-      filtered[key] = next[key];
-    }
-  }
   owned.add(filtered);
 
   return filtered;
