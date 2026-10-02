@@ -627,11 +627,11 @@ describe("a list diffed from previousState is never applied to the doc's childre
       patchSharedType(map, before);
     });
 
-    const unappliedInboundTargets = new Set<unknown>();
+    const unappliedInboundTargets = new Map<unknown, Set<string>>();
 
     map.observeDeep((events) => {
       for (const event of events) {
-        unappliedInboundTargets.add(event.target);
+        unappliedInboundTargets.set(event.target, new Set());
       }
     });
     yjs.applyUpdate(doc, makeRemotePrepend(doc, "s"), "remote");

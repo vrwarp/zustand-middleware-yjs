@@ -443,8 +443,9 @@ const yjsImpl: YjsImpl = <S>(
     // applied to state.
     let isUpdatePending = false;
     // The shared types those unapplied transactions changed (their event
-    // targets), for the same-tick flush's three-way array merge.
-    let unappliedInboundTargets: Set<yjs.AbstractType<unknown>> | undefined;
+    // targets), each with the keys they changed in it when it is a Y.Map,
+    // for the same-tick flush's three-way array merge.
+    let unappliedInboundTargets: Map<yjs.AbstractType<unknown>, Set<string>> | undefined;
 
     /*
      * The doc state an inbound patch is applying right now. A middleware
@@ -1168,10 +1169,17 @@ const yjsImpl: YjsImpl = <S>(
 
       // Until processBatch applies this transaction, a flush must not undo
       // it: record what it changed (see patchSharedTypeScoped).
-      unappliedInboundTargets = unappliedInboundTargets ?? new Set();
+      unappliedInboundTargets = unappliedInboundTargets ?? new Map();
 
       for (const event of events) {
-        unappliedInboundTargets.add(event.target);
+        const changedKeys = unappliedInboundTargets.get(event.target) ?? new Set<string>();
+
+        if (event.target instanceof yjs.Map) {
+          for (const key of (event as yjs.YMapEvent<unknown>).keysChanged as Set<string>) {
+            changedKeys.add(key);
+          }
+        }
+        unappliedInboundTargets.set(event.target, changedKeys);
       }
 
       // 3. Microtask Coalescing.

@@ -62,14 +62,16 @@ export interface ScopedPatchOptions extends PatchOptions {
 
   /**
    * The shared types that foreign transactions not yet applied to state
-   * changed (their event targets). Set only while such an inbound batch is
-   * pending, when the doc may be ahead of state: an array leaf that none of
-   * them can have restructured (neither it nor an ancestor is listed, and
-   * its length still matches previousState) applies only the changes from
-   * previousState to newState, so a remote edit inside an element the local
-   * write left alone is not reverted.
+   * changed (their event targets), each with the keys those transactions
+   * added, replaced or removed in it when it is a Y.Map (`keysChanged`).
+   * Set only while such an inbound batch is pending, when the doc may be
+   * ahead of state: an array leaf that none of them can have restructured
+   * (it is not listed, no listed ancestor changed the key it sits under,
+   * and its length still matches previousState) applies only the changes
+   * from previousState to newState, so a remote edit inside an element the
+   * local write left alone is not reverted.
    */
-  unappliedInboundTargets?: ReadonlySet<unknown>;
+  unappliedInboundTargets?: ReadonlyMap<unknown, ReadonlySet<string>>;
 }
 
 /** Options threaded through scopedPatchKey's recursion. */
@@ -1176,24 +1178,31 @@ const scopedPatchKey = (
  * Whether the foreign transactions that changed `changedTypes` cannot have
  * inserted, deleted or replaced elements of `array`: a Y.Array whose
  * elements were inserted or deleted is itself an event target, and one
- * placed (or re-placed) by those transactions has a changed ancestor. The
- * length must also still match previousState's stored form.
+ * placed (or re-placed) by those transactions sits under a key that a
+ * changed ancestor map lists. A write to any other key of an ancestor (a
+ * sibling of the array, or of a record above it) leaves the array in place.
+ * The length must also still match previousState's stored form.
  */
 const isArrayStructureUnchanged = (
   array: yjs.Array<unknown>,
   previousLength: number,
-  changedTypes: ReadonlySet<unknown>
+  changedTypes: ReadonlyMap<unknown, ReadonlySet<string>>
 ): boolean => {
-  if (array.length !== previousLength) {
+  if (array.length !== previousLength || changedTypes.has(array)) {
     return false;
   }
 
-  let type: unknown = array;
+  // The key the walk's current child sits under in `type` (null in an array).
+  let key = array._item?.parentSub;
+  let type: unknown = array.parent;
 
   while (type instanceof yjs.AbstractType) {
-    if (changedTypes.has(type)) {
+    const changedKeys = changedTypes.get(type);
+
+    if (changedKeys !== undefined && (!(type instanceof yjs.Map) || typeof key !== "string" || changedKeys.has(key))) {
       return false;
     }
+    key = type._item?.parentSub;
     type = type.parent;
   }
 
