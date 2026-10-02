@@ -444,7 +444,7 @@ const applyChangesToSharedType = (
             if (typeof newValue === "string" && !(existing instanceof yjs.Text)) {
               // Plain string diff - set it directly since primitive strings can't be patched incrementally
               sharedType.set(prop, newValue);
-            } else {
+            } else if (existing instanceof yjs.AbstractType) {
               /*
                * The parent snapshot (which the change list was computed
                * against) already contains this child's JSON — thread it down
@@ -469,6 +469,15 @@ const applyChangesToSharedType = (
                   precomputedJson: childJson,
                 }
               );
+            } else {
+              /*
+               * A plain JSON object/array stored in the doc (ContentAny, e.g.
+               * map.set(k, { ... }) by a migration or another writer) has no
+               * shared type to recurse into — replace it with the mapped value.
+               */
+              sharedType.set(prop, Array.isArray(newValue)
+                ? arrayToYArray(newValue, options)
+                : objectToYMap(newValue as Record<string, unknown>, options));
             }
           }
         } else if (sharedType instanceof yjs.Array) {
@@ -500,12 +509,18 @@ const applyChangesToSharedType = (
               // Plain string diff - update directly by replacing the element
               sharedType.delete(index);
               sharedType.insert(index, [newValue]);
-            } else {
+            } else if (existing instanceof yjs.AbstractType) {
               patchSharedType(
                 existing as yjs.Map<unknown> | yjs.Array<unknown> | yjs.Text,
                 newValue,
                 { atomicKeys, disableYText, yTextKeys, previousState: childPreviousState }
               );
+            } else {
+              // Plain JSON object/array element (ContentAny): replace it with the mapped value.
+              sharedType.delete(index);
+              sharedType.insert(index, [Array.isArray(newValue)
+                ? arrayToYArray(newValue, options)
+                : objectToYMap(newValue as Record<string, unknown>, options)]);
             }
           }
         }

@@ -119,7 +119,7 @@ const useSharedStore = create(
 );
 ```
 
-**Migrations:** The middleware handles data migration automatically. If you change a key from being mapped to `Y.Text` to a plain string (e.g. by enabling `disableYText` or adding it to `atomicKeys`), the next time the value is updated in Zustand, it will seamlessly overwrite the `Y.Text` object in Yjs with the plain string. The reverse is also true.
+**Migrations:** The middleware handles data migration automatically. If you change a key from being mapped to `Y.Text` to a plain string (e.g. by enabling `disableYText` or adding it to `atomicKeys`), the next time the value is updated in Zustand, it will seamlessly overwrite the `Y.Text` object in Yjs with the plain string. The reverse is also true. Likewise, a plain JSON object or array written into the map outside the middleware (e.g. `map.set("cfg", { a: 1 })` in a migration or server code) hydrates as-is and is replaced with a `Y.Map` / `Y.Array` the next time that value is updated in Zustand.
 
 ### Schema Version Guard (Poison Pill)
 
