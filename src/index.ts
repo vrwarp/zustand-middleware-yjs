@@ -403,6 +403,12 @@ const yjsImpl: YjsImpl = <S>(
 
       batchPreviousState = undefined;
 
+      // The poison pill may have fired after this flush was queued (a remote
+      // schema bump in the same tick): never write legacy state over it.
+      if (isObsolete) {
+        return;
+      }
+
       const sharedOptions = {
         atomicKeys,
         disableYText,
@@ -641,6 +647,15 @@ const yjsImpl: YjsImpl = <S>(
 
       pendingInboundPaths = undefined;
       hasShallowInboundEvent = false;
+
+      // A later transaction in this batch may have fired the poison pill: the
+      // doc now holds newer-schema data the legacy store must never absorb.
+      if (isObsolete) {
+        pendingInboundKeys = undefined;
+        hasPendingInboundFull = false;
+
+        return;
+      }
 
       const storeForPatch = {
         ...api,
