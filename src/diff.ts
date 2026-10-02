@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-use-before-define */
+import { toYArrayElements } from "./mapping";
 import { type Change,changeType } from "./types";
 
 export type Diffable = string | unknown[] | Record<string, unknown>;
@@ -242,11 +243,34 @@ const getChangesText = (a: string, b: string): Change[] => {
 };
 
 /**
+ * Element-wise isDeepEqualForDiff for two arrays. An element a Y.Array cannot
+ * store (undefined, a function) never matches, not even itself: it is
+ * compared in its stored form instead (see isDeepEqualForDiff).
+ */
+const isEveryElementEqualForDiff = (a: unknown[], b: unknown[]): boolean => {
+  if (a.length !== b.length) {
+    return false;
+  }
+
+  return a.every((left, index) => {
+    const right = b[index];
+
+    if (left === right) {
+      return right !== undefined && typeof right !== "function";
+    }
+
+    return isDiffable(left) && isDiffable(right) && isSameType(left, right) &&
+      isDeepEqualForDiff(left, right);
+  });
+};
+
+/**
  *
  * Early-exit deep equality with the exact semantics of
  * `getChanges(a, b).length === 0` for same-type diffable pairs, without
  * building change lists. Mirrors getChanges' quirks on purpose: a
- * function-valued key missing from `b` does not count as a difference, and
+ * function-valued key missing from `b` does not count as a difference,
+ * `b`'s array elements compare in their stored form (toYArrayElements), and
  * non-diffable values (including NaN) compare by strict equality.
  */
 const isDeepEqualForDiff = (a: unknown, b: unknown): boolean => {
@@ -266,20 +290,19 @@ const isDeepEqualForDiff = (a: unknown, b: unknown): boolean => {
    * per-field tuple and iterator allocations.
    */
   if (Array.isArray(a) && Array.isArray(b)) {
-    if (a.length !== b.length) {
-      return false;
+    if (isEveryElementEqualForDiff(a, b)) {
+      return true;
     }
 
-    return a.every((left, index) => {
-      const right = b[index];
+    /*
+     * A `b` holding elements a Y.Array cannot store (undefined, holes,
+     * functions) always lands here: retry against its stored form, as
+     * getChanges diffs it. A JSON-clean `b` (the common case) already is its
+     * stored form, so equal arrays never pay for the conversion.
+     */
+    const elements = toYArrayElements(b);
 
-      if (left === right) {
-        return true;
-      }
-
-      return isDiffable(left) && isDiffable(right) && isSameType(left, right) &&
-        isDeepEqualForDiff(left, right);
-    });
+    return elements !== b && isEveryElementEqualForDiff(a, elements);
   }
 
   if (isRecord(a) && isRecord(b)) {
@@ -615,7 +638,17 @@ export const getChanges = (a: Diffable, b: Diffable, { previousA }: GetChangesOp
     return getChangesText(a, b);
   }
   if (Array.isArray(a) && Array.isArray(b)) {
-    return getArrayChanges(a, b, Array.isArray(previousA) ? { previousA } : {});
+    /*
+     * Diff toward the elements a Y.Array can actually hold (undefined -> null,
+     * functions dropped) so that an already-normalized doc yields no changes
+     * and the emitted indices match the elements the applier inserts.
+     * `previousA` is a previous `b`, so it is normalized the same way.
+     */
+    return getArrayChanges(
+      a,
+      toYArrayElements(b),
+      Array.isArray(previousA) ? { "previousA": toYArrayElements(previousA) } : {}
+    );
   }
   if (isRecord(a) && isRecord(b)) {
     return getRecordChanges(a, b);

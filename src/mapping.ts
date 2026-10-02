@@ -31,6 +31,34 @@ const isObject = (value: unknown): value is Record<string, unknown> => {
 export const stringToYText = (value: string): yjs.Text => new yjs.Text(value);
 
 /**
+ * The elements of an array as its Y.Array stores them: function elements are
+ * dropped and `undefined` (including a hole in a sparse array) becomes `null`,
+ * as in JSON — Y.Array.insert throws on `undefined`. The differ diffs against
+ * this form, so change indices address it. Returns `array` itself when it
+ * holds neither (the common case).
+ *
+ * @param array - The array to normalize.
+ * @returns The elements as stored in a Y.Array.
+ */
+export const toYArrayElements = (array: unknown[]): unknown[] => {
+  /*
+   * An indexed loop: unlike some/filter it also visits holes (as undefined),
+   * and it allocates nothing for a JSON-clean array (the differ calls this
+   * for every array it diffs).
+   */
+  for (let index = 0; index < array.length; index = index + 1) {
+    const value = array[index];
+
+    if (value === undefined || typeof value === "function") {
+      return Array.from(array, (element) => element ?? null)
+        .filter((element) => typeof element !== "function");
+    }
+  }
+
+  return array;
+};
+
+/**
  * Converts an array to a Y.Array object.
  *
  * @param array - The array to convert.
@@ -49,10 +77,7 @@ export const arrayToYArray = (
   const yarray = new yjs.Array<unknown>();
   const mappedArray: unknown[] = [];
 
-  for (const value of array) {
-    if (typeof value === "function") {
-      continue;
-    }
+  for (const value of toYArrayElements(array)) {
     if (typeof value === "string") {
       mappedArray.push(options.disableYText ? value : stringToYText(value));
     } else if (Array.isArray(value)) {

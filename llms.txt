@@ -132,7 +132,7 @@ The middleware maps JavaScript/Zustand data types to Yjs shared types automatica
 
 -   **`Object` (Plain)** → `Y.Map` Keys are observed. Changes to properties trigger Yjs updates.
 
--   **`Array`** → `Y.Array` Pushes, splices, and inserts are mapped to Yjs array operations.
+-   **`Array`** → `Y.Array` Pushes, splices, and inserts are mapped to Yjs array operations. As in JSON, an `undefined` element (or a sparse-array hole) is stored as `null`; function elements are dropped.
 
 -   **`Primitive` (string, number, boolean)** → Native Stored as primitive values within the parent `Y.Map` or `Y.Array`.
 

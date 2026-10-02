@@ -2,7 +2,7 @@
 import * as yjs from "yjs";
 import type { StoreApi } from "zustand/vanilla";
 import { getChanges } from "./diff";
-import { arrayToYArray, type MappingOptions, objectToYMap, stringToYText } from "./mapping";
+import { arrayToYArray, type MappingOptions, objectToYMap, stringToYText, toYArrayElements } from "./mapping";
 import { type Change, changeType } from "./types";
 
 /**
@@ -132,6 +132,10 @@ const coalesceArrayChanges = (changes: Change[]): Change[] =>
 const deleteRunLength = (value: unknown): number =>
    typeof value === "number" ? value : 1 ;
 
+/** An array in the form its Y.Array stores it; any other value as is. */
+const asStoredElements = (value: unknown): unknown =>
+  { return Array.isArray(value) ? toYArrayElements(value) : value };
+
 /**
  * Applies an already-computed change list to a yjs shared type. Extracted from
  * patchSharedType so the scoped-diff path can reuse the exact same
@@ -156,7 +160,13 @@ const applyChangesToSharedType = (
     sharedTypeJson,
   }: ApplyChangesOptions = {}
 ): void => {
-  const options = { atomicKeys, disableYText, previousState, yTextKeys };
+  /*
+   * getChanges diffs an array toward its stored form (toYArrayElements:
+   * functions dropped, undefined -> null), so Y.Array change indices address
+   * that form; index the new and the previous state through it as well.
+   */
+  const elementState = asStoredElements(newState);
+  const options = { atomicKeys, disableYText, "previousState": asStoredElements(previousState), yTextKeys };
 
   // Y.Text edits arrive as per-character changes and Y.Array shrinks as
   // per-element same-index deletes; apply both as runs instead.
@@ -377,7 +387,7 @@ const applyChangesToSharedType = (
         } else if (sharedType instanceof yjs.Array) {
           const index = property as number;
           const existing = sharedType.get(index);
-          const newValue = (newState as unknown[])[index];
+          const newValue = (elementState as unknown[])[index];
           let isTextMappingMismatch = false;
 
           if (typeof newValue === "string") {

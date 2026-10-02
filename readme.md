@@ -292,6 +292,10 @@ hydration.
       * This does not mean you cannot use awareness in your projects - see the
         sister project [y-react](joebobmiles/y-react) for an example of using
         awareness without the middleware.
+ 2. Array elements that JSON cannot represent are normalized before they are
+    written to a `Y.Array`: an `undefined` element (or a hole in a sparse
+    array) is stored as `null`, as in JSON, and a function element is
+    dropped. Other clients therefore see `null` (or no element) in its place.
 
 # License
 
