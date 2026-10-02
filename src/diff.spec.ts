@@ -382,6 +382,17 @@ describe("getChanges", () => {
       }
     );
 
+    // A plain JSON doc value (ContentAny) keeps undefined inside its arrays;
+    // it must compare equal to b's stored form (null), its own copy included.
+    it.each([
+      [[[undefined]], [[undefined]]],
+      [[[undefined]], [[null]]],
+      [[{ "tags": [undefined, 1] }], [{ "tags": [undefined, 1] }]],
+    ])("Compares an undefined element of `a` as null", (a, b) => {
+      expect(getChanges(a, b)).toStrictEqual([]);
+      expect(isDeepEqualForDiff(a, b)).toBe(true);
+    });
+
     describe("Deletion Lookahead (FIFO Queue Operations)", () => {
       it("Detects primitive shift+push as DELETE+INSERT instead of N updates", () => {
         // [1, 2, 3, 4, 5] → [2, 3, 4, 5, 6]

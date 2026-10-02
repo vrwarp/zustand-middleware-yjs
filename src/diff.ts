@@ -32,6 +32,17 @@ const toCodePoints = (text: string): string[] => [...text];
 const isSameValueZero = (a: unknown, b: unknown): boolean =>
   { return a === b || (Number.isNaN(a) && Number.isNaN(b)) };
 
+/**
+ * SameValueZero for an element of `a` and an element of `b`'s stored form
+ * (toYArrayElements), where undefined is null: an undefined element of `a`
+ * compares as null too. A Y.Array never holds undefined, but a plain JSON
+ * value in the doc (ContentAny: a `jsonElementKeys` element, a foreign
+ * writer's map value) keeps it inside its arrays, and compared as is it
+ * would differ from every state, its own copy in state included.
+ */
+const isSameElement = (left: unknown, right: unknown): boolean =>
+  { return isSameValueZero(left === undefined ? null : left, right) };
+
 const hasCommonSubsequence = (a: string, b: string): boolean => {
   const alphabetOfB = new Set(b);
 
@@ -252,9 +263,10 @@ const getChangesText = (a: string, b: string): Change[] => {
 };
 
 /**
- * Element-wise isDeepEqualForDiff for two arrays. An element a Y.Array cannot
- * store (undefined, a hole, a function) never matches, not even itself: it is
- * compared in its stored form instead (see isDeepEqualForDiff).
+ * Element-wise isDeepEqualForDiff for two arrays. An element of `b` a Y.Array
+ * cannot store (undefined, a function) never matches, not even itself: it is
+ * compared in its stored form instead (see isDeepEqualForDiff). An undefined
+ * element of `a`, a hole included, compares as null (see isSameElement).
  */
 const isEveryElementEqualForDiff = (a: unknown[], b: unknown[]): boolean => {
   if (a.length !== b.length) {
@@ -271,7 +283,7 @@ const isEveryElementEqualForDiff = (a: unknown[], b: unknown[]): boolean => {
   for (let index = 0; index < a.length; index = index + 1) {
     const left = a[index];
     const right = b[index];
-    const isEqual = isSameValueZero(left, right)
+    const isEqual = isSameElement(left, right)
       ? right !== undefined && typeof right !== "function"
       : isDiffable(left) && isDiffable(right) && isSameType(left, right) &&
         isDeepEqualForDiff(left, right);
@@ -290,7 +302,8 @@ const isEveryElementEqualForDiff = (a: unknown[], b: unknown[]): boolean => {
  * `getChanges(a, b).length === 0` for same-type diffable pairs, without
  * building change lists. Mirrors getChanges' quirks on purpose: a
  * function-valued key missing from `b` does not count as a difference,
- * `b`'s array elements compare in their stored form (toYArrayElements), and
+ * `b`'s array elements compare in their stored form (toYArrayElements) and
+ * an undefined array element of `a` as null (isSameElement), and
  * non-diffable values compare by isSameValueZero (so an unchanged NaN is
  * equal, and 0 equals -0).
  */
@@ -373,7 +386,7 @@ const getMatchingRunLength = (
     const right = b[bStart + length];
 
     if (
-      !isSameValueZero(left, right) &&
+      !isSameElement(left, right) &&
       !(isDiffable(left) && isDiffable(right) && isSameType(left, right) && isDeepEqualForDiff(left, right))
     ) {
       break;
@@ -542,7 +555,7 @@ const getArrayChanges = (
     for (let k = 0; k <= LOOKAHEAD_WINDOW; k = k + 1) {
       if (bIndex + k < b.length) {
         const bValue = b[bIndex + k];
-        const isStrictMatch = isSameValueZero(value, bValue);
+        const isStrictMatch = isSameElement(value, bValue);
         const isDeepMatch =
           !isStrictMatch &&
           isDiffable(value) &&
@@ -572,7 +585,7 @@ const getArrayChanges = (
 
       if (k > 0 && index + k < a.length) {
         const nextA = a[index + k];
-        const isStrictMatch = isSameValueZero(nextA, b[bIndex]);
+        const isStrictMatch = isSameElement(nextA, b[bIndex]);
         const isDeepMatch =
           !isStrictMatch &&
           isDiffable(nextA) &&
