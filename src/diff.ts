@@ -334,6 +334,80 @@ const isDeepEqualForDiff = (a: unknown, b: unknown): boolean => {
 };
 
 /**
+ * Length of the run of consecutive matching elements (strict or deep
+ * equality, as in the array lookahead) starting at a[aStart] and b[bStart],
+ * capped at `limit`.
+ */
+const getMatchingRunLength = (
+  a: unknown[],
+  b: unknown[],
+  aStart: number,
+  bStart: number,
+  limit: number
+): number => {
+  let length = 0;
+
+  while (length < limit && aStart + length < a.length && bStart + length < b.length) {
+    const left = a[aStart + length];
+    const right = b[bStart + length];
+
+    if (
+      left !== right &&
+      !(isDiffable(left) && isDiffable(right) && isSameType(left, right) && isDeepEqualForDiff(left, right))
+    ) {
+      break;
+    }
+    length = length + 1;
+  }
+
+  return length;
+};
+
+/**
+ * Whether a block shift found for the mismatch at a[index] / b[bIndex] (the
+ * elements in between inserted or deleted so that alignment resumes at
+ * a[aStart] ~ b[bStart]) beats replacing a[index] in place, which resumes
+ * alignment at a[index + 1] ~ b[bIndex + 1].
+ *
+ * A far match is only evidence of a shift. With duplicate values (null, 0,
+ * equal objects) one is easy to find, and taking it deletes and re-inserts
+ * elements nobody changed: their shared types are tombstoned and recreated,
+ * so a concurrent remote edit to them is lost, and concurrent edits to
+ * neighbouring slots merge into the wrong length. So when the next elements
+ * already line up, the shift wins only if it lines up a longer run than the
+ * replacement does, or an equally long run that also brings the remaining
+ * lengths of `a` and `b` closer (as a head removal before a run of
+ * duplicates does). Only called on a mismatch, at most 2 × `limit`
+ * comparisons.
+ */
+const isShiftPreferredOverReplace = (
+  a: unknown[],
+  b: unknown[],
+  index: number,
+  bIndex: number,
+  aStart: number,
+  bStart: number,
+  limit: number
+): boolean => {
+  const replaceRun = getMatchingRunLength(a, b, index + 1, bIndex + 1, limit);
+
+  if (replaceRun === 0) {
+    return true;
+  }
+
+  const shiftRun = getMatchingRunLength(a, b, aStart, bStart, limit);
+
+  if (shiftRun !== replaceRun) {
+    return shiftRun > replaceRun;
+  }
+
+  const replaceImbalance = Math.abs((a.length - index) - (b.length - bIndex));
+  const shiftImbalance = Math.abs((a.length - aStart) - (b.length - bStart));
+
+  return shiftImbalance < replaceImbalance;
+};
+
+/**
  * Options for array diffing.
  */
 interface ArrayDiffOptions {
@@ -394,6 +468,9 @@ const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOpt
     }
 
     let isMatchFound = false;
+    // Set when the nearest shift loses to an in-place replacement (see
+    // isShiftPreferredOverReplace); the replacement below then runs directly.
+    let isReplacePreferred = false;
 
     for (let k = 0; k <= LOOKAHEAD_WINDOW; k = k + 1) {
       if (bIndex + k < b.length) {
@@ -409,6 +486,10 @@ const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOpt
 
         if (isStrictMatch || isDeepMatch) {
           if (k > 0) {
+            if (!isShiftPreferredOverReplace(a, b, index, bIndex, index, bIndex + k, LOOKAHEAD_WINDOW)) {
+              isReplacePreferred = true;
+              break;
+            }
             for (let insertIdx = 0; insertIdx < k; insertIdx = insertIdx + 1) {
               changeList.push([changeType.insert, bIndex + insertIdx, b[bIndex + insertIdx]]);
             }
@@ -434,6 +515,10 @@ const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOpt
             : false;
 
         if (isStrictMatch || isDeepMatch) {
+          if (!isShiftPreferredOverReplace(a, b, index, bIndex, index + k, bIndex, LOOKAHEAD_WINDOW)) {
+            isReplacePreferred = true;
+            break;
+          }
           for (let deleteIdx = 0; deleteIdx < k; deleteIdx = deleteIdx + 1) {
             changeList.push([changeType.delete, bIndex, undefined]);
           }
@@ -451,8 +536,9 @@ const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOpt
 
     // Extended identity scan (see identityScanBudget above): look past the
     // deep-equality window for a strict-identity alignment on either side,
-    // and take the shorter shift when both exist.
-    if (identityScanBudget > 0) {
+    // and take the shorter shift when both exist. A shift it finds must
+    // still beat an in-place replacement, like the in-window ones.
+    if (!isReplacePreferred && identityScanBudget > 0) {
       const bTarget = b[bIndex];
       let deleteShift = -1;
 
@@ -534,7 +620,11 @@ const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOpt
         }
       }
 
-      if (deleteShift !== -1 && (insertShift === -1 || deleteShift <= insertShift)) {
+      if (
+        deleteShift !== -1 &&
+        (insertShift === -1 || deleteShift <= insertShift) &&
+        isShiftPreferredOverReplace(a, b, index, bIndex, index + deleteShift, bIndex, LOOKAHEAD_WINDOW)
+      ) {
         // Mirror of the in-window delete branch with k = deleteShift.
         for (let deleteIdx = 0; deleteIdx < deleteShift; deleteIdx = deleteIdx + 1) {
           changeList.push([changeType.delete, bIndex, undefined]);
@@ -544,7 +634,10 @@ const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOpt
         continue;
       }
 
-      if (insertShift !== -1) {
+      if (
+        insertShift !== -1 &&
+        isShiftPreferredOverReplace(a, b, index, bIndex, index, bIndex + insertShift, LOOKAHEAD_WINDOW)
+      ) {
         // Mirror of the in-window insert branch with k = insertShift.
         for (let insertIdx = 0; insertIdx < insertShift; insertIdx = insertIdx + 1) {
           changeList.push([changeType.insert, bIndex + insertIdx, b[bIndex + insertIdx]]);

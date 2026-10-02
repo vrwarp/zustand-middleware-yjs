@@ -122,8 +122,7 @@ describe("getChanges", () => {
             changeType.pending,
             "foo",
             [
-              [changeType.delete, 0, undefined],
-              [changeType.insert, 1, 2]
+              [changeType.update, 0, 2]
             ]
           ]
         ]
@@ -212,45 +211,66 @@ describe("getChanges", () => {
         ]
       ],
       /*
-       * This is an edge case in how we perform change detection.
+       * A repeated value in A used to confuse the look ahead: B's position 2
+       * (3) matches A's position 1 (3), which reads as "2 was inserted in
+       * front of the 3", after which A's second 3 has nothing left to match
+       * and is deleted — an insert plus a delete that recreates an element
+       * nobody changed (losing any concurrent remote edit to it).
        *
-       * In this case, A contains a repeated sequence of digits that is not in
-       * B. This confuses the look ahead, which, in order to detect an update,
-       * looks to the next value in B to see if the value found in A has just
-       * moved.
-       *
-       * When it sees that A's position 1, with a value of 3, is not the same as
-       * B's position 1 (with a value of 2), the look ahead checks to see if
-       * B's position 2 is the same as A's position 1. It is, so the algorithm
-       * assumes that an insertion took place in B.
-       *
-       * This insertion causes an increase in the indexing offset for B. When
-       * that happens, the next iteration is looking at B position 3 (does not
-       * exist) instead of position 3. Because B position 3 does not exist, it
-       * is assumed that the duplicate value was deleted in B.
-       *
-       * As far as I know, there's no way around this. One option is that we
-       * could increase the look ahead. But by doing that, we change the minimum
-       * length of the sequence this happens with. If we added, say, a look
-       * ahead of two positions, we'd eliminate the issue with values repeated
-       * twice, but not for values repeated three times.
-       *
-       * Another option is to retroactively recognize a repeated sequence and
-       * then correct the previous insertion to an update when we try to delete
-       * the end of the sequence. However, this has other issues, such as the
-       * ambiguity about what to do when an update happens at the beginning of
-       * a repeated sequence and a delete happens at the end. That could be
-       * construed as an insert at the beginning and two deletes at the end.
-       *
-       * At the end of the day, a correct transformation is better than a
-       * 'correct' change list.
+       * The next elements (A's and B's position 2) already line up, though,
+       * and the shift does not line up a longer run than they do, so the
+       * change is read as a single in-place update of position 1.
        */
       [
         [1, 3, 3],
         [1, 2, 3],
         [
-          [changeType.insert, 1, 2],
-          [changeType.delete, 3, undefined]
+          [changeType.update, 1, 2]
+        ]
+      ],
+      // A shift still wins when it lines up a longer run than an in-place
+      // replacement: this is a head removal, not an update plus a delete.
+      [
+        [9, 1, 1, 2],
+        [1, 1, 2],
+        [
+          [changeType.delete, 0, undefined]
+        ]
+      ],
+      // ...and when the runs tie (here both reach the look-ahead cap), the
+      // shift wins if it brings the remaining lengths closer together.
+      [
+        [9, ...Array.from({ "length": 12 }, () => 0)],
+        Array.from({ "length": 12 }, () => 0),
+        [
+          [changeType.delete, 0, undefined]
+        ]
+      ],
+      // A block prepended to an array with alternating duplicates is still
+      // inserted, rather than read as in-place replacements.
+      [
+        [{ "id": 1, }, null, { "id": 2, }, null],
+        [{ "id": 0, }, null, { "id": 1, }, null, { "id": 2, }, null],
+        [
+          [changeType.insert, 0, { "id": 0, }],
+          [changeType.insert, 1, null]
+        ]
+      ],
+      // A strict-identity match past the window is not taken either when the
+      // next elements already line up: replace slot 0, keep the zeros.
+      [
+        [1, ...Array.from({ "length": 11 }, () => 0), 2],
+        [2, ...Array.from({ "length": 11 }, () => 0), 2],
+        [
+          [changeType.update, 0, 2]
+        ]
+      ],
+      [
+        [1, ...Array.from({ "length": 11 }, () => 0)],
+        [2, ...Array.from({ "length": 10 }, () => 0), 1],
+        [
+          [changeType.update, 0, 2],
+          [changeType.update, 11, 1]
         ]
       ],
       [
