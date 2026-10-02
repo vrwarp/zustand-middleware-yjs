@@ -405,6 +405,9 @@ const yjsImpl: YjsImpl = <S>(
     // tick, and true while a foreign transaction is in the doc but not yet
     // applied to state.
     let isUpdatePending = false;
+    // The shared types those unapplied transactions changed (their event
+    // targets), for the same-tick flush's three-way array merge.
+    let unappliedInboundTargets: Set<yjs.AbstractType<unknown>> | undefined;
 
     /*
      * The doc state an inbound patch is applying right now. A middleware
@@ -484,6 +487,7 @@ const yjsImpl: YjsImpl = <S>(
           patchSharedTypeScoped(dataMap, state, previousState, {
             ...sharedOptions,
             backfillAbsentKeys: hydration !== "merge-defaults" && !hasUnappliedInbound,
+            unappliedInboundTargets: hasUnappliedInbound ? unappliedInboundTargets : undefined,
           });
           recordOwnFlush(transaction, dataMap, state);
         }, api);
@@ -722,6 +726,7 @@ const yjsImpl: YjsImpl = <S>(
       }
 
       isUpdatePending = false;
+      unappliedInboundTargets = undefined;
 
       /*
        * Take this batch's deep-path accumulators up front so every exit below
@@ -1018,6 +1023,14 @@ const yjsImpl: YjsImpl = <S>(
             }
           }
         }
+      }
+
+      // Until processBatch applies this transaction, a flush must not undo
+      // it: record what it changed (see patchSharedTypeScoped).
+      unappliedInboundTargets = unappliedInboundTargets ?? new Set();
+
+      for (const event of events) {
+        unappliedInboundTargets.add(event.target);
       }
 
       // 3. Microtask Coalescing.

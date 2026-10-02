@@ -238,6 +238,80 @@ describe.each(modes)("same-tick local set() and remote transaction (%s)", (_labe
     expect(remote.getMap("lib").toJSON()).toEqual(expected);
   });
 
+  describe("a remote element edit and a local reshape of the same array", () => {
+    type Item = { id: number; v: number };
+    type List = { items: Item[] };
+
+    const setupList = async () => {
+      const { local, remote } = createPeers();
+      const store = createStore<List>()(
+        yjs(local, "l", () => ({ items: [] as Item[] }), { scopedDiff })
+      );
+
+      store.setState({ items: [{ id: 1, v: 0 }, { id: 2, v: 0 }, { id: 3, v: 0 }] });
+      await settle();
+      expect(remote.getMap("l").toJSON()).toEqual({ items: [{ id: 1, v: 0 }, { id: 2, v: 0 }, { id: 3, v: 0 }] });
+
+      const remoteItems = remote.getMap("l").get("items") as Y.Array<Y.Map<number>>;
+
+      return { local, remote, remoteItems, store };
+    };
+
+    const prepend = (state: List): List => ({ items: [{ id: 0, v: 0 }, ...state.items] });
+    const expected = { items: [{ id: 0, v: 0 }, { id: 1, v: 0 }, { id: 2, v: 5 }, { id: 3, v: 0 }] };
+
+    it("local prepend then remote edit of an element: both survive", async () => {
+      const { local, remote, remoteItems, store } = await setupList();
+
+      store.setState(prepend);
+      remoteItems.get(1).set("v", 5);
+
+      await settle();
+
+      expect(store.getState()).toEqual(expected);
+      expect(local.getMap("l").toJSON()).toEqual(expected);
+      expect(remote.getMap("l").toJSON()).toEqual(expected);
+    });
+
+    it("remote edit of an element then local prepend: both survive", async () => {
+      const { local, remote, remoteItems, store } = await setupList();
+
+      remoteItems.get(1).set("v", 5);
+      store.setState(prepend);
+
+      await settle();
+
+      expect(store.getState()).toEqual(expected);
+      expect(local.getMap("l").toJSON()).toEqual(expected);
+      expect(remote.getMap("l").toJSON()).toEqual(expected);
+    });
+
+    it("a remote reorder and a local element edit converge without losing or duplicating elements", async () => {
+      const { local, remote, remoteItems, store } = await setupList();
+
+      // The remote peer swaps the first two elements (delete + re-insert)
+      // while the local user edits the second one: positions no longer
+      // match the batch-start state, so the local edit must not be applied
+      // positionally onto whatever element now sits there.
+      remote.transact(() => {
+        remoteItems.delete(0);
+        remoteItems.insert(1, [new Y.Map<number>([["id", 1], ["v", 0]])]);
+      });
+      store.setState((state) => ({
+        items: state.items.map((item) => (item.id === 2 ? { ...item, v: 9 } : item)),
+      }));
+
+      await settle();
+
+      const { items } = store.getState();
+
+      expect(local.getMap("l").toJSON()).toEqual(remote.getMap("l").toJSON());
+      expect(local.getMap("l").toJSON()).toEqual({ items });
+      expect(items.map((item) => item.id).sort()).toEqual([1, 2, 3]);
+      expect(items.find((item) => item.id === 2)?.v).toBe(9);
+    });
+  });
+
   /*
    * Two stores on one doc. When the library gains a book, app code reacts by
    * seeding that book's reading progress. Both peers start with book b1 at 0

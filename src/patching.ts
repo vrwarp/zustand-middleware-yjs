@@ -47,7 +47,21 @@ export interface ScopedPatchOptions extends PatchOptions {
    * backfill lazily.
    */
   backfillAbsentKeys?: boolean;
+
+  /**
+   * The shared types that foreign transactions not yet applied to state
+   * changed (their event targets). Set only while such an inbound batch is
+   * pending, when the doc may be ahead of state: an array leaf that none of
+   * them can have restructured (neither it nor an ancestor is listed, and
+   * its length still matches previousState) applies only the changes from
+   * previousState to newState, so a remote edit inside an element the local
+   * write left alone is not reverted.
+   */
+  unappliedInboundTargets?: ReadonlySet<unknown>;
 }
+
+/** Options threaded through scopedPatchKey's recursion. */
+type ScopedKeyOptions = MappingOptions & Pick<ScopedPatchOptions, "unappliedInboundTargets">;
 
 /**
  * Internal options for applyChangesToSharedType: additionally carries the
@@ -633,11 +647,12 @@ export const patchSharedTypeScoped = (
     yTextKeys,
     syncedKeys,
     backfillAbsentKeys,
+    unappliedInboundTargets,
   }: ScopedPatchOptions = {}
 ): void => {
   const prevRecord: Record<string, unknown> = isPlainRecord(previousState) ? previousState : {};
   const newRecord: Record<string, unknown> = isPlainRecord(newState) ? newState : {};
-  const options = { atomicKeys, disableYText, yTextKeys };
+  const options: ScopedKeyOptions = { atomicKeys, disableYText, yTextKeys, unappliedInboundTargets };
 
   const keys = new Set<string>([...Object.keys(prevRecord), ...Object.keys(newRecord)]);
 
@@ -708,15 +723,17 @@ export const patchSharedTypeScoped = (
  * @param key - The key to patch.
  * @param prevRecord - The record `key` lived in at batch start (delete guard).
  * @param newRecord - The record `key` lives in now.
- * @param options - Mapping options (atomicKeys / disableYText / yTextKeys).
+ * @param options - Mapping options (atomicKeys / disableYText / yTextKeys),
+ * plus the unapplied inbound targets (see ScopedPatchOptions).
  */
 const scopedPatchKey = (
   parentMap: yjs.Map<unknown>,
   key: string,
   prevRecord: Record<string, unknown>,
   newRecord: Record<string, unknown>,
-  options: MappingOptions
+  options: ScopedKeyOptions
 ): void => {
+  const { unappliedInboundTargets, ...mappingOptions } = options;
   const prevValue = prevRecord[key];
   const nextValue = newRecord[key];
   const hasInMap = parentMap.has(key);
@@ -738,13 +755,24 @@ const scopedPatchKey = (
      * (including previousState threading into nested pending recursion)
      * match the legacy pending path for this array exactly.
      */
-    const arrayJson = existing.toJSON() as unknown[];
+    const previousElements = toYArrayElements(prevValue);
+
+    /*
+     * While an inbound batch is unapplied, the doc array may hold remote
+     * edits state has not seen, and a doc-vs-new diff would revert them.
+     * When those transactions cannot have restructured it, its positions
+     * still match previousState: apply only what the local batch changed.
+     */
+    const changes = unappliedInboundTargets !== undefined &&
+      isArrayStructureUnchanged(existing, previousElements.length, unappliedInboundTargets)
+      ? getChanges(previousElements, nextValue, { "previousA": prevValue })
+      : getChanges(existing.toJSON() as unknown[], nextValue, { "previousA": prevValue });
 
     applyChangesToSharedType(
       existing,
-      getChanges(arrayJson, nextValue, { "previousA": prevValue }),
+      changes,
       nextValue,
-      { ...options, "previousState": prevValue }
+      { ...mappingOptions, "previousState": prevValue }
     );
 
     return;
@@ -808,8 +836,36 @@ const scopedPatchKey = (
     b,
     // Threading `a` lets the pending recursion for this key reuse the
     // toJSON() snapshot taken above instead of serializing the subtree twice.
-    { ...options, "previousState": prevRecord, "sharedTypeJson": a }
+    { ...mappingOptions, "previousState": prevRecord, "sharedTypeJson": a }
   );
+};
+
+/**
+ * Whether the foreign transactions that changed `changedTypes` cannot have
+ * inserted, deleted or replaced elements of `array`: a Y.Array whose
+ * elements were inserted or deleted is itself an event target, and one
+ * placed (or re-placed) by those transactions has a changed ancestor. The
+ * length must also still match previousState's stored form.
+ */
+const isArrayStructureUnchanged = (
+  array: yjs.Array<unknown>,
+  previousLength: number,
+  changedTypes: ReadonlySet<unknown>
+): boolean => {
+  if (array.length !== previousLength) {
+    return false;
+  }
+
+  let type: unknown = array;
+
+  while (type instanceof yjs.AbstractType) {
+    if (changedTypes.has(type)) {
+      return false;
+    }
+    type = type.parent;
+  }
+
+  return true;
 };
 
 /**
