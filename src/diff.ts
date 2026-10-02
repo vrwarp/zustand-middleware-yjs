@@ -15,6 +15,13 @@ const isSameType = (a: unknown, b: unknown): boolean => {
   return (Array.isArray(a) && Array.isArray(b)) || (isRecord(a) && isRecord(b));
 };
 
+const isHighSurrogate = (code: number): boolean => code >= 0xD8_00 && code <= 0xDB_FF;
+
+const isLowSurrogate = (code: number): boolean => code >= 0xDC_00 && code <= 0xDF_FF;
+
+// eslint-disable-next-line @typescript-eslint/no-misused-spread -- code points, not graphemes: only a split surrogate pair corrupts a Y.Text
+const toCodePoints = (text: string): string[] => [...text];
+
 const hasCommonSubsequence = (a: string, b: string): boolean => {
   const alphabetOfB = new Set(b);
 
@@ -28,11 +35,14 @@ const hasCommonSubsequence = (a: string, b: string): boolean => {
 };
 
 /**
- * An adaptation of Wu et al. O(NP) text diff.
+ * An adaptation of Wu et al. O(NP) text diff over code points. Emitted
+ * indices are UTF-16 offsets (what Y.Text and String#slice index by), so a
+ * surrogate pair is inserted whole and deleted as two single-unit deletes at
+ * one index — never split, which Y.Text would turn into two U+FFFD.
  */
 const diffTextInternal = (
-  a: string,
-  b: string,
+  a: string[],
+  b: string[],
   isReversed: boolean
 ): Change[] => {
   const m = a.length;
@@ -108,7 +118,18 @@ const pathPositions: InlineInterface[] = [];
   const changeList: Change[] = [];
   let curX = 0;
   let curY = 0;
-  let curIndex = -1;
+  let curIndex = 0;
+
+  const insertChar = (char: string): void => {
+    changeList.push([changeType.insert, curIndex, char]);
+    curIndex = curIndex + char.length;
+  };
+
+  const deleteChar = (char: string): void => {
+    for (let unit = 0; unit < char.length; unit = unit + 1) {
+      changeList.push([changeType.delete, curIndex, undefined]);
+    }
+  };
 
   for (let i = editPath.length - 1; i >= 0; i = i - 1) {
     const point = editPath[i] as { x: number; y: number };
@@ -116,24 +137,25 @@ const pathPositions: InlineInterface[] = [];
     while (curX <= point.x || curY <= point.y) {
       if (point.y - point.x > curY - curX) {
         if (isReversed) {
-          changeList.push([changeType.delete, curIndex, undefined]);
+          deleteChar(b[curY - 1]);
         } else {
-          changeList.push([changeType.insert, curIndex, b[curY - 1]]);
-          curIndex = curIndex + 1;
+          insertChar(b[curY - 1]);
         }
         curY = curY + 1;
       } else if (point.y - point.x < curY - curX) {
         if (isReversed) {
-          changeList.push([changeType.insert, curIndex, a[curX - 1]]);
-          curIndex = curIndex + 1;
+          insertChar(a[curX - 1]);
         } else {
-          changeList.push([changeType.delete, curIndex, undefined]);
+          deleteChar(a[curX - 1]);
         }
         curX = curX + 1;
       } else {
+        // The first step leaves the virtual start (0, 0) and matches nothing.
+        if (curX > 0) {
+          curIndex = curIndex + a[curX - 1].length;
+        }
         curX = curX + 1;
         curY = curY + 1;
-        curIndex = curIndex + 1;
       }
     }
   }
@@ -144,16 +166,24 @@ const pathPositions: InlineInterface[] = [];
 const getChangesTextInner = (a: string, b: string): Change[] => {
   if (!hasCommonSubsequence(a, b)) {
     const deletes = Array.from({ length: a.length }, (): Change => [changeType.delete, 0, undefined]);
-    const inserts = Array.from({ length: b.length }, (value, index): Change => [changeType.insert, index, b[index]]);
+    const inserts: Change[] = [];
+    let index = 0;
+
+    for (const char of b) {
+      inserts.push([changeType.insert, index, char]);
+      index = index + char.length;
+    }
 
     return [...deletes, ...inserts];
   }
 
-  const m = a.length;
-  const n = b.length;
-  const isReverse = m >= n;
+  const aChars = toCodePoints(a);
+  const bChars = toCodePoints(b);
+  const isReverse = aChars.length >= bChars.length;
 
-  return isReverse ? diffTextInternal(b, a, isReverse) : diffTextInternal(a, b, isReverse);
+  return isReverse
+    ? diffTextInternal(bChars, aChars, isReverse)
+    : diffTextInternal(aChars, bChars, isReverse);
 };
 
 const getChangesText = (a: string, b: string): Change[] => {
@@ -175,6 +205,12 @@ const getChangesText = (a: string, b: string): Change[] => {
     prefix = prefix + 1;
   }
 
+  // Trimming compares UTF-16 code units, so keep both window edges off the
+  // middle of a surrogate pair (emoji sharing a high surrogate, e.g. 😀/😁).
+  if (prefix > 0 && isHighSurrogate(a.charCodeAt(prefix - 1))) {
+    prefix = prefix - 1;
+  }
+
   const maxSuffix = maxPrefix - prefix;
   let suffix = 0;
 
@@ -183,6 +219,10 @@ const getChangesText = (a: string, b: string): Change[] => {
     a[a.length - 1 - suffix] === b[b.length - 1 - suffix]
   ) {
     suffix = suffix + 1;
+  }
+
+  if (suffix > 0 && isLowSurrogate(a.charCodeAt(a.length - suffix))) {
+    suffix = suffix - 1;
   }
 
   const changes = getChangesTextInner(

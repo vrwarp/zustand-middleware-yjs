@@ -479,8 +479,7 @@ describe("getChanges", () => {
         "",
         "😀",
         [
-          [changeType.insert, 0, "\uD83D"],
-          [changeType.insert, 1, "\uDE00"]
+          [changeType.insert, 0, "😀"]
         ]
       ],
       [
@@ -494,19 +493,42 @@ describe("getChanges", () => {
       [
         "😀",
         "😁",
-        // The shared high surrogate \uD83D is common-prefix-trimmed, so only
-        // the differing low surrogate is deleted and reinserted.
+        // The shared high surrogate \uD83D is NOT common-prefix-trimmed:
+        // splitting the pair would make Y.Text replace both halves with
+        // U+FFFD, so the whole code point is deleted and reinserted.
         [
-          [changeType.delete, 1, undefined],
-          [changeType.insert, 1, "\uDE01"]
+          [changeType.delete, 0, undefined],
+          [changeType.delete, 0, undefined],
+          [changeType.insert, 0, "😁"]
         ]
       ],
       [
         "I love 😀",
         "I love 😁",
         [
-          [changeType.delete, 8, undefined],
-          [changeType.insert, 8, "\uDE01"]
+          [changeType.delete, 7, undefined],
+          [changeType.delete, 7, undefined],
+          [changeType.insert, 7, "😁"]
+        ]
+      ],
+      [
+        "😀",
+        "😂😀",
+        // Shared surrogates on both sides of the edit are kept whole too.
+        [[changeType.insert, 0, "😂"]]
+      ],
+      [
+        "x😀-y",
+        "z😁-w",
+        // No common prefix or suffix: the inner diff compares code points.
+        [
+          [changeType.delete, 0, undefined],
+          [changeType.delete, 0, undefined],
+          [changeType.delete, 0, undefined],
+          [changeType.insert, 0, "z"],
+          [changeType.insert, 1, "😁"],
+          [changeType.delete, 4, undefined],
+          [changeType.insert, 4, "w"]
         ]
       ]
     ])(
