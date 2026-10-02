@@ -1199,6 +1199,52 @@ const isArrayStructureUnchanged = (
 };
 
 /**
+ * Drops function-valued keys (store actions) from a state record, and the
+ * same keys from the doc JSON beside it, at every depth. An action is never
+ * replicated and inbound patches never replace one with replicated data, so
+ * whatever the doc holds at an action's key is by design, not drift.
+ *
+ * @param docValue - The doc's JSON at this level.
+ * @param stateValue - The state at the same level.
+ * @returns Both values with action keys removed.
+ */
+const withoutActionKeys = (docValue: unknown, stateValue: unknown): [unknown, unknown] => {
+  if (!isPlainRecord(stateValue)) {
+    return [docValue, stateValue];
+  }
+
+  const docRecord = isPlainRecord(docValue) ? docValue : undefined;
+  const docOut: Record<string, unknown> = {};
+  const stateOut: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(stateValue)) {
+    if (isDangerousKey(key) || value instanceof Function) {
+      continue;
+    }
+    if (docRecord !== undefined && Object.hasOwn(docRecord, key)) {
+      const [docChild, stateChild] = withoutActionKeys(docRecord[key], value);
+
+      docOut[key] = docChild;
+      stateOut[key] = stateChild;
+    } else {
+      stateOut[key] = value;
+    }
+  }
+
+  if (docRecord === undefined) {
+    return [docValue, stateOut];
+  }
+
+  for (const [key, value] of Object.entries(docRecord)) {
+    if (!isDangerousKey(key) && !Object.hasOwn(stateValue, key)) {
+      docOut[key] = value;
+    }
+  }
+
+  return [docOut, stateOut];
+};
+
+/**
  * Options for assertScopedDiffConvergence.
  */
 export interface ScopedDiffConvergenceOptions {
@@ -1230,18 +1276,12 @@ export const assertScopedDiffConvergence = (
   state: unknown,
   { syncedKeys }: ScopedDiffConvergenceOptions = {}
 ): void => {
-  const stateRecord: Record<string, unknown> = {};
-
-  if (isPlainRecord(state)) {
-    for (const [key, value] of Object.entries(state)) {
-      if (!(value instanceof Function)) {
-        stateRecord[key] = value;
-      }
-    }
-  }
-
-  const a = syncedKeys ? pickMapJson(sharedType, syncedKeys) : sharedType.toJSON();
-  const b = syncedKeys ? pickKeys(stateRecord, syncedKeys) : stateRecord;
+  const stateRecord: Record<string, unknown> = isPlainRecord(state) ? state : {};
+  const docJson: unknown = syncedKeys ? pickMapJson(sharedType, syncedKeys) : sharedType.toJSON();
+  const [a, b] = withoutActionKeys(
+    docJson,
+    syncedKeys ? pickKeys(stateRecord, syncedKeys) : stateRecord
+  );
 
   const residual = getChanges(
     a as string | unknown[] | Record<string, unknown>,

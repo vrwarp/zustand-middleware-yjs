@@ -2,7 +2,9 @@
  * Regression: the DEV scopedDiff divergence tripwire must only fire on a
  * genuine mutate-in-place write. It must NOT throw for an immutable store
  * whose doc is legitimately ahead of the store (a remote change whose inbound
- * microtask has not run yet) or whose state holds a NaN (NaN !== NaN).
+ * microtask has not run yet), whose doc holds remote data at the key of a
+ * nested action (never replicated, never overwritten), or whose state holds a
+ * NaN (NaN !== NaN).
  *
  * The sampling rate is pinned to 1 so the check runs on every flush; at the
  * default rate (0.02) the same false positives fire randomly, ~1 flush in 50.
@@ -254,6 +256,39 @@ describe("scopedDiff DEV tripwire — no false positives for immutable stores", 
     }).not.toThrow();
 
     expect((doc.getMap("s").get("samples") as yjs.Array<number>).toJSON()).toEqual([1, Number.NaN]);
+  });
+
+  it("does not throw when a remote peer has data at a nested action's key", async () => {
+    __scopedDiffDevSampling.rate = 1;
+
+    interface State { count: number; nested: { v: number; fn: () => string } }
+
+    const doc = new yjs.Doc();
+    const store = createStore<State>()(
+      yjsMiddleware(
+        doc,
+        "s",
+        (): State => ({ "count": 0, "nested": { "v": 1, "fn": () => "x" } }),
+        { "scopedDiff": true }
+      )
+    );
+    const handle = getYjsStoreHandle(store);
+
+    store.setState((state) => ({ "count": 1, "nested": { ...state.nested } }));
+    handle.flush();
+
+    // A peer writes data at `nested.fn`. The store keeps its action and
+    // never absorbs that data, so the doc holds it for good — by design.
+    doc.transact(() => {
+      (doc.getMap("s").get("nested") as yjs.Map<unknown>).set("fn", { "x": 1 });
+    }, "remote-origin");
+    await Promise.resolve();
+    expect(typeof store.getState().nested.fn).toBe("function");
+
+    store.setState({ "count": 2 });
+    expect(() => {
+      handle.flush();
+    }).not.toThrow();
   });
 
   it("still catches a mutate-in-place write once the pending inbound batch has run", async () => {
