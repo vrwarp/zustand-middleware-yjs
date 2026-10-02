@@ -10,6 +10,9 @@
  * state but absent from the map, an array that is merely declared (never
  * written by any set()) reaches the doc on the first flush, so the false
  * positive fires on ANY sampled flush, not only after the array is written.
+ * The backfill runs once the store has hydrated, so each store here starts on
+ * a new doc that is marked hydrated, as its provider does once that doc is
+ * synced and empty.
  *
  * The sampling rate is pinned to 1 so the check runs on every flush; at the
  * default rate (0.02) the same false positive fires randomly, ~1 flush in 50.
@@ -77,6 +80,8 @@ describe("scopedDiff DEV tripwire — actions inside array elements are not dive
     );
     const handle = getYjsStoreHandle(store);
 
+    handle.markHydrated();
+
     // An unrelated, immutable write. `items` is never set().
     store.setState({ "n": 1 });
 
@@ -99,6 +104,8 @@ describe("scopedDiff DEV tripwire — actions inside array elements are not dive
       )
     );
 
+    getYjsStoreHandle(store).markHydrated();
+
     const uncaught = await collectUncaught(async () => {
       store.setState({ "n": 1 });
 
@@ -118,6 +125,8 @@ describe("scopedDiff DEV tripwire — actions inside array elements are not dive
       yjsMiddleware(doc, "m", () => ({ "items": [] as Item[], "n": 0 }), { "scopedDiff": true })
     );
     const handle = getYjsStoreHandle(store);
+
+    handle.markHydrated();
 
     store.setState({ "items": [{ "id": 1, "onClick": () => 1 }, { "id": 2, "onClick": () => 2 }] });
 
@@ -143,6 +152,8 @@ describe("scopedDiff DEV tripwire — actions inside array elements are not dive
       )
     );
     const handle = getYjsStoreHandle(store);
+
+    handle.markHydrated();
 
     store.setState({ "n": 1 });
 
@@ -173,6 +184,8 @@ describe("scopedDiff DEV tripwire — actions inside array elements are not dive
     );
     const handle = getYjsStoreHandle(store);
 
+    handle.markHydrated();
+
     store.setState({ "n": 1 });
 
     expect(() => {
@@ -197,6 +210,8 @@ describe("scopedDiff DEV tripwire — actions inside array elements are not dive
       )
     );
     const handle = getYjsStoreHandle(store);
+
+    handle.markHydrated();
 
     store.setState({ "n": 1 });
 
@@ -223,6 +238,8 @@ describe("scopedDiff DEV tripwire — actions inside array elements are not dive
       )
     );
     const handle = getYjsStoreHandle(store);
+
+    handle.markHydrated();
 
     store.setState({ "n": 1 });
 

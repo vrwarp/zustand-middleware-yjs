@@ -66,6 +66,10 @@ describe.each(variants)(
         yjs(doc, "s", () => ({ keep: 1 }), { scopedDiff, scope }),
       );
       const handle = getYjsStoreHandle(store);
+
+      // A new doc, synced and empty: hydrated, so a scopedDiff flush also
+      // writes the untouched `keep` default, as the full diff does.
+      handle.markHydrated();
       /** The store's data map in the doc (the scope child under `scope`). */
       const dataMap = (): Y.Map<unknown> => {
         const root = doc.getMap("s");

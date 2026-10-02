@@ -70,6 +70,9 @@ const setupWithForeignWrite = async (
   );
   const handle = getYjsStoreHandle(store);
 
+  // A new doc, synced and empty: hydrated, so the seed flush writes every
+  // declared key under scopedDiff too.
+  handle.markHydrated();
   store.setState({ "n": 1 });
   handle.flush();
 

@@ -106,6 +106,9 @@ describe.each(modes)("same-tick three-way flush (%s)", (_label, scopedDiff) => {
         yjs(local, "s", () => ({ list: [] as Item[], other: 0 }), { scopedDiff, disableYText: true })
       );
 
+      // A new doc, synced and empty: hydrated, so the seed flush also writes
+      // the untouched `other` default under scopedDiff.
+      getYjsStoreHandle(store).markHydrated();
       store.setState({ list: [{ id: 1, b: 1 }, { id: 2, b: 2 }], other: 0 });
       await settle();
       expect(remote.getMap("s").toJSON()).toEqual({ list: [{ id: 1, b: 1 }, { id: 2, b: 2 }], other: 0 });
@@ -293,6 +296,11 @@ describe.each(modes)("same-tick three-way flush (%s)", (_label, scopedDiff) => {
       const progress = createStore<Progress>()(
         yjs(local, "progress", () => ({ list: [] as Progress["list"], updatedAt: 0 }), options)
       );
+
+      // New docs, synced and empty: hydrated, so the seed flush also writes
+      // the untouched `updatedAt` default under scopedDiff.
+      getYjsStoreHandle(library).markHydrated();
+      getYjsStoreHandle(progress).markHydrated();
 
       // Every new book gets a progress entry.
       library.subscribe((state) => {
