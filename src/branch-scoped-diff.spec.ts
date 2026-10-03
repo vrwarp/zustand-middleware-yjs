@@ -16,7 +16,7 @@
 import * as fc from "fast-check";
 import * as yjs from "yjs";
 import { createStore } from "zustand/vanilla";
-import yjsMiddleware, { getYjsStoreHandle } from ".";
+import yjsMiddleware, { __scopedDiffDevSampling, getYjsStoreHandle } from ".";
 import { getChanges } from "./diff";
 import { patchSharedTypeScoped } from "./patching";
 import { changeType } from "./types";
@@ -176,6 +176,22 @@ describe("getChanges with a previous-state alignment hint", () => {
 });
 
 describe("branch-scoped outbound diff (patchSharedTypeScoped recursion)", () => {
+  /*
+   * The toJSON spies below assert that sibling branches are never
+   * serialized. The DEV-only scopedDiff tripwire is sampled with
+   * Math.random() and serializes the whole map when it fires, so leave it on
+   * and roughly one run in fifty fails. Pin it off for this block.
+   */
+  const originalSamplingRate = __scopedDiffDevSampling.rate;
+
+  beforeAll(() => {
+    __scopedDiffDevSampling.rate = 0;
+  });
+
+  afterAll(() => {
+    __scopedDiffDevSampling.rate = originalSamplingRate;
+  });
+
   interface TreeState {
     progress: Record<string, Record<string, { cfi: string; pct: number; tags: string[] }>>;
     bump: (book: string, device: string, cfi: string) => void;

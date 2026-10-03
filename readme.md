@@ -119,13 +119,15 @@ const useSharedStore = create(
 );
 ```
 
-**Migrations:** The middleware handles data migration automatically. If you change a key from being mapped to `Y.Text` to a plain string (e.g. by enabling `disableYText` or adding it to `atomicKeys`), the next time the value is updated in Zustand, it will seamlessly overwrite the `Y.Text` object in Yjs with the plain string. The reverse is also true.
+**Migrations:** The middleware handles data migration automatically. If you change a key from being mapped to `Y.Text` to a plain string (e.g. by enabling `disableYText` or adding it to `atomicKeys`), the next time the value is updated in Zustand, it will seamlessly overwrite the `Y.Text` object in Yjs with the plain string. The reverse is also true. Likewise, a plain JSON object or array written into the map outside the middleware (e.g. `map.set("cfg", { a: 1 })` in a migration or server code) hydrates as-is and is replaced with a `Y.Map` / `Y.Array` the next time that value is updated in Zustand.
 
 ### Schema Version Guard (Poison Pill)
 
 To support backwards-incompatible breaking changes to your data model, you can provide a `schemaVersion` option. If a remote peer writes a `__schemaVersion` to the Yjs document that is strictly *greater* than your local `schemaVersion`, the middleware permanently halts all outbound and inbound synchronization. This "Poison Pill" prevents legacy clients from corrupting newly upgraded data structures offline and unintentionally syncing that corruption back to the network.
 
-When the poison pill is triggered, the `onObsolete` callback is fired, allowing your application to display an update prompt or reload the page.
+The same check runs when the store is created, so it also covers the cold-start case where a persistence provider loaded an already-upgraded document before the store was constructed. Such a store is never hydrated from the newer data: it keeps its declared defaults, and `onLoaded` does not fire.
+
+When the poison pill is triggered, the `onObsolete` callback is fired, allowing your application to display an update prompt or reload the page. When the document is already newer at creation, `getYjsStoreHandle(store).isObsolete()` is true immediately and `onObsolete` fires in a microtask, after the store has been created.
 
 ```tsx
 const useSharedStore = create(
@@ -229,6 +231,25 @@ reference) is invisible to the fast path; in development the middleware samples
 flushes and throws a loud "scopedDiff divergence tripwire" error if it detects
 such drift.
 
+Under the default `"replace"` hydration, a scoped flush also writes the
+top-level keys the document has never held (defaults nobody has set yet), as
+the full diff does, so that a reload or a peer does not delete them; a key
+deleted from the document stays deleted. It does so only once the store has
+hydrated: before that the document may simply not have loaded yet, and a
+default written into it would compete with the persisted value when it loads
+(and could win). An earlier flush writes only what changed,
+and hydrating writes the rest. For a new document, call `markHydrated()` once it
+is synced (see below), or untouched defaults are not written.
+
+In either mode, when a local write and a remote change land in the same tick,
+the pending local write is flushed before the remote batch is applied to the
+store, and that flush takes the same reference-checked route: it writes only
+what the local batch changed, so it cannot revert a remote change the store has
+not applied yet. Inside an array both sides changed, that holds per element as
+long as the remote change only edited elements; if it also inserted, deleted or
+moved elements of that array, the local version of the array is written. In-place
+mutations are invisible to that flush too.
+
 ### Binding to a nested map (`scope`)
 
 `scope: { key }` binds the store to a nested `Y.Map` at
@@ -271,7 +292,9 @@ handle.isObsolete();              // true once the schema-version poison pill fi
 ```
 
 `whenHydrated()` resolves strictly after the hydrating `setState`, so an
-awaiting caller always observes hydrated state. `markHydrated()` exists for the
+awaiting caller always observes hydrated state. A first patch that changes
+nothing (the doc holds exactly the store's state) skips `setState` and
+notifies no subscriber, but still resolves it. `markHydrated()` exists for the
 case the middleware cannot detect on its own — the document is synced but this
 store's map is legitimately empty; it is idempotent and safe to call after real
 hydration.
@@ -284,6 +307,10 @@ hydration.
       * This does not mean you cannot use awareness in your projects - see the
         sister project [y-react](joebobmiles/y-react) for an example of using
         awareness without the middleware.
+ 2. Array elements that JSON cannot represent are normalized before they are
+    written to a `Y.Array`: an `undefined` element (or a hole in a sparse
+    array) is stored as `null`, as in JSON, and a function element is
+    dropped. Other clients therefore see `null` (or no element) in its place.
 
 # License
 

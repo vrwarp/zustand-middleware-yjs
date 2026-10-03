@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-use-before-define */
+import { toYArrayElements } from "./mapping";
 import { type Change,changeType } from "./types";
 
 export type Diffable = string | unknown[] | Record<string, unknown>;
@@ -15,6 +16,33 @@ const isSameType = (a: unknown, b: unknown): boolean => {
   return (Array.isArray(a) && Array.isArray(b)) || (isRecord(a) && isRecord(b));
 };
 
+const isHighSurrogate = (code: number): boolean => code >= 0xD8_00 && code <= 0xDB_FF;
+
+const isLowSurrogate = (code: number): boolean => code >= 0xDC_00 && code <= 0xDF_FF;
+
+// eslint-disable-next-line @typescript-eslint/no-misused-spread -- code points, not graphemes: only a split surrogate pair corrupts a Y.Text
+const toCodePoints = (text: string): string[] => [...text];
+
+/**
+ * SameValueZero: strict equality, except that NaN equals NaN. A NaN in state
+ * round-trips through the doc as NaN, so with plain `!==` an unchanged NaN
+ * would be re-written on every flush (clobbering concurrent remote edits) and
+ * re-patched on every inbound batch. Unlike Object.is, 0 and -0 stay equal.
+ */
+const isSameValueZero = (a: unknown, b: unknown): boolean =>
+  { return a === b || (Number.isNaN(a) && Number.isNaN(b)) };
+
+/**
+ * SameValueZero for an element of `a` and an element of `b`'s stored form
+ * (toYArrayElements), where undefined is null: an undefined element of `a`
+ * compares as null too. A Y.Array never holds undefined, but a plain JSON
+ * value in the doc (ContentAny: a `jsonElementKeys` element, a foreign
+ * writer's map value) keeps it inside its arrays, and compared as is it
+ * would differ from every state, its own copy in state included.
+ */
+const isSameElement = (left: unknown, right: unknown): boolean =>
+  { return isSameValueZero(left === undefined ? null : left, right) };
+
 const hasCommonSubsequence = (a: string, b: string): boolean => {
   const alphabetOfB = new Set(b);
 
@@ -28,11 +56,14 @@ const hasCommonSubsequence = (a: string, b: string): boolean => {
 };
 
 /**
- * An adaptation of Wu et al. O(NP) text diff.
+ * An adaptation of Wu et al. O(NP) text diff over code points. Emitted
+ * indices are UTF-16 offsets (what Y.Text and String#slice index by), so a
+ * surrogate pair is inserted whole and deleted as two single-unit deletes at
+ * one index — never split, which Y.Text would turn into two U+FFFD.
  */
 const diffTextInternal = (
-  a: string,
-  b: string,
+  a: string[],
+  b: string[],
   isReversed: boolean
 ): Change[] => {
   const m = a.length;
@@ -108,7 +139,18 @@ const pathPositions: InlineInterface[] = [];
   const changeList: Change[] = [];
   let curX = 0;
   let curY = 0;
-  let curIndex = -1;
+  let curIndex = 0;
+
+  const insertChar = (char: string): void => {
+    changeList.push([changeType.insert, curIndex, char]);
+    curIndex = curIndex + char.length;
+  };
+
+  const deleteChar = (char: string): void => {
+    for (let unit = 0; unit < char.length; unit = unit + 1) {
+      changeList.push([changeType.delete, curIndex, undefined]);
+    }
+  };
 
   for (let i = editPath.length - 1; i >= 0; i = i - 1) {
     const point = editPath[i] as { x: number; y: number };
@@ -116,24 +158,25 @@ const pathPositions: InlineInterface[] = [];
     while (curX <= point.x || curY <= point.y) {
       if (point.y - point.x > curY - curX) {
         if (isReversed) {
-          changeList.push([changeType.delete, curIndex, undefined]);
+          deleteChar(b[curY - 1]);
         } else {
-          changeList.push([changeType.insert, curIndex, b[curY - 1]]);
-          curIndex = curIndex + 1;
+          insertChar(b[curY - 1]);
         }
         curY = curY + 1;
       } else if (point.y - point.x < curY - curX) {
         if (isReversed) {
-          changeList.push([changeType.insert, curIndex, a[curX - 1]]);
-          curIndex = curIndex + 1;
+          insertChar(a[curX - 1]);
         } else {
-          changeList.push([changeType.delete, curIndex, undefined]);
+          deleteChar(a[curX - 1]);
         }
         curX = curX + 1;
       } else {
+        // The first step leaves the virtual start (0, 0) and matches nothing.
+        if (curX > 0) {
+          curIndex = curIndex + a[curX - 1].length;
+        }
         curX = curX + 1;
         curY = curY + 1;
-        curIndex = curIndex + 1;
       }
     }
   }
@@ -144,16 +187,24 @@ const pathPositions: InlineInterface[] = [];
 const getChangesTextInner = (a: string, b: string): Change[] => {
   if (!hasCommonSubsequence(a, b)) {
     const deletes = Array.from({ length: a.length }, (): Change => [changeType.delete, 0, undefined]);
-    const inserts = Array.from({ length: b.length }, (value, index): Change => [changeType.insert, index, b[index]]);
+    const inserts: Change[] = [];
+    let index = 0;
+
+    for (const char of b) {
+      inserts.push([changeType.insert, index, char]);
+      index = index + char.length;
+    }
 
     return [...deletes, ...inserts];
   }
 
-  const m = a.length;
-  const n = b.length;
-  const isReverse = m >= n;
+  const aChars = toCodePoints(a);
+  const bChars = toCodePoints(b);
+  const isReverse = aChars.length >= bChars.length;
 
-  return isReverse ? diffTextInternal(b, a, isReverse) : diffTextInternal(a, b, isReverse);
+  return isReverse
+    ? diffTextInternal(bChars, aChars, isReverse)
+    : diffTextInternal(aChars, bChars, isReverse);
 };
 
 const getChangesText = (a: string, b: string): Change[] => {
@@ -175,6 +226,12 @@ const getChangesText = (a: string, b: string): Change[] => {
     prefix = prefix + 1;
   }
 
+  // Trimming compares UTF-16 code units, so keep both window edges off the
+  // middle of a surrogate pair (emoji sharing a high surrogate, e.g. 😀/😁).
+  if (prefix > 0 && isHighSurrogate(a.charCodeAt(prefix - 1))) {
+    prefix = prefix - 1;
+  }
+
   const maxSuffix = maxPrefix - prefix;
   let suffix = 0;
 
@@ -183,6 +240,10 @@ const getChangesText = (a: string, b: string): Change[] => {
     a[a.length - 1 - suffix] === b[b.length - 1 - suffix]
   ) {
     suffix = suffix + 1;
+  }
+
+  if (suffix > 0 && isLowSurrogate(a.charCodeAt(a.length - suffix))) {
+    suffix = suffix - 1;
   }
 
   const changes = getChangesTextInner(
@@ -202,15 +263,52 @@ const getChangesText = (a: string, b: string): Change[] => {
 };
 
 /**
+ * Element-wise isDeepEqualForDiff for two arrays. An element of `b` a Y.Array
+ * cannot store (undefined, a function) never matches, not even itself: it is
+ * compared in its stored form instead (see isDeepEqualForDiff). An undefined
+ * element of `a`, a hole included, compares as null (see isSameElement).
+ */
+const isEveryElementEqualForDiff = (a: unknown[], b: unknown[]): boolean => {
+  if (a.length !== b.length) {
+    return false;
+  }
+
+  /*
+   * An indexed loop, as getArrayChanges walks `a`: every() skips the holes
+   * of a sparse `a` (inbound, `a` is the store's state and `b` the doc), so
+   * a remote write into a slot the state holds as a hole compared equal and
+   * was dropped. entries() would allocate a tuple per element.
+   */
+  // eslint-disable-next-line unicorn/no-for-loop -- holes must be visited (see above)
+  for (let index = 0; index < a.length; index = index + 1) {
+    const left = a[index];
+    const right = b[index];
+    const isEqual = isSameElement(left, right)
+      ? right !== undefined && typeof right !== "function"
+      : isDiffable(left) && isDiffable(right) && isSameType(left, right) &&
+        isDeepEqualForDiff(left, right);
+
+    if (!isEqual) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
+/**
  *
  * Early-exit deep equality with the exact semantics of
  * `getChanges(a, b).length === 0` for same-type diffable pairs, without
  * building change lists. Mirrors getChanges' quirks on purpose: a
- * function-valued key missing from `b` does not count as a difference, and
- * non-diffable values (including NaN) compare by strict equality.
+ * function-valued key missing from `b` does not count as a difference,
+ * `b`'s array elements compare in their stored form (toYArrayElements) and
+ * an undefined array element of `a` as null (isSameElement), and
+ * non-diffable values compare by isSameValueZero (so an unchanged NaN is
+ * equal, and 0 equals -0).
  */
-const isDeepEqualForDiff = (a: unknown, b: unknown): boolean => {
-  if (a === b) {
+export const isDeepEqualForDiff = (a: unknown, b: unknown): boolean => {
+  if (isSameValueZero(a, b)) {
     return true;
   }
 
@@ -220,45 +318,44 @@ const isDeepEqualForDiff = (a: unknown, b: unknown): boolean => {
 
   /*
    * Hot path: this runs for every element of every diffed array and every key
-   * of every diffed record, so the per-field cost matters. `===` is checked
-   * before any type classification (most fields are primitives), and
+   * of every diffed record, so the per-field cost matters. isSameValueZero is
+   * checked before any type classification (most fields are primitives), and
    * Object.keys/every are used instead of Object.entries/for-of to avoid
    * per-field tuple and iterator allocations.
    */
   if (Array.isArray(a) && Array.isArray(b)) {
-    if (a.length !== b.length) {
-      return false;
+    if (isEveryElementEqualForDiff(a, b)) {
+      return true;
     }
 
-    return a.every((left, index) => {
-      const right = b[index];
+    /*
+     * A `b` holding elements a Y.Array cannot store (undefined, holes,
+     * functions) always lands here: retry against its stored form, as
+     * getChanges diffs it. A JSON-clean `b` (the common case) already is its
+     * stored form, so equal arrays never pay for the conversion.
+     */
+    const elements = toYArrayElements(b);
 
-      if (left === right) {
-        return true;
-      }
-
-      return isDiffable(left) && isDiffable(right) && isSameType(left, right) &&
-        isDeepEqualForDiff(left, right);
-    });
+    return elements !== b && isEveryElementEqualForDiff(a, elements);
   }
 
   if (isRecord(a) && isRecord(b)) {
     const isEveryAKeyAccounted = Object.keys(a).every((property) =>
-       property in b || a[property] instanceof Function );
+       Object.hasOwn(b, property) || a[property] instanceof Function );
 
     if (!isEveryAKeyAccounted) {
       return false;
     }
 
     return Object.keys(b).every((property) => {
-      if (!(property in a)) {
+      if (!Object.hasOwn(a, property)) {
         return false;
       }
 
       const other = a[property];
       const value = b[property];
 
-      if (other === value) {
+      if (isSameValueZero(other, value)) {
         return true;
       }
 
@@ -271,14 +368,134 @@ const isDeepEqualForDiff = (a: unknown, b: unknown): boolean => {
 };
 
 /**
+ * Length of the run of consecutive matching elements (strict or deep
+ * equality, as in the array lookahead) starting at a[aStart] and b[bStart],
+ * capped at `limit`.
+ */
+const getMatchingRunLength = (
+  a: unknown[],
+  b: unknown[],
+  aStart: number,
+  bStart: number,
+  limit: number
+): number => {
+  let length = 0;
+
+  while (length < limit && aStart + length < a.length && bStart + length < b.length) {
+    const left = a[aStart + length];
+    const right = b[bStart + length];
+
+    if (
+      !isSameElement(left, right) &&
+      !(isDiffable(left) && isDiffable(right) && isSameType(left, right) && isDeepEqualForDiff(left, right))
+    ) {
+      break;
+    }
+    length = length + 1;
+  }
+
+  return length;
+};
+
+/**
+ * Whether a block shift found for the mismatch at a[index] / b[bIndex] (the
+ * elements in between inserted or deleted so that alignment resumes at
+ * a[aStart] ~ b[bStart]) beats replacing a[index] in place, which resumes
+ * alignment at a[index + 1] ~ b[bIndex + 1].
+ *
+ * A far match is only evidence of a shift. With duplicate values (null, 0,
+ * equal objects) one is easy to find, and taking it deletes and re-inserts
+ * elements nobody changed: their shared types are tombstoned and recreated,
+ * so a concurrent remote edit to them is lost, and concurrent edits to
+ * neighbouring slots merge into the wrong length. So when the next elements
+ * already line up, the shift wins only if it lines up a longer run than the
+ * replacement does, or an equally long run that also brings the remaining
+ * lengths of `a` and `b` closer (as a head removal before a run of
+ * duplicates does). Only called on a mismatch, at most 2 × `limit`
+ * comparisons.
+ */
+const isShiftPreferredOverReplace = (
+  a: unknown[],
+  b: unknown[],
+  index: number,
+  bIndex: number,
+  aStart: number,
+  bStart: number,
+  limit: number
+): boolean => {
+  const replaceRun = getMatchingRunLength(a, b, index + 1, bIndex + 1, limit);
+
+  if (replaceRun === 0) {
+    return true;
+  }
+
+  const shiftRun = getMatchingRunLength(a, b, aStart, bStart, limit);
+
+  if (shiftRun !== replaceRun) {
+    return shiftRun > replaceRun;
+  }
+
+  const replaceImbalance = Math.abs((a.length - index) - (b.length - bIndex));
+  const shiftImbalance = Math.abs((a.length - aStart) - (b.length - bStart));
+
+  return shiftImbalance < replaceImbalance;
+};
+
+/**
+ * How record and array diffs describe an unequal pair of NESTED strings (a
+ * top-level string pair is always diffed: that is the Y.Text diff
+ * patchSharedType applies).
+ *
+ * - `"diff"` (default): a pending change carrying the character-level diff.
+ * - `"defer"`: a pending change carrying deferredTextDiff, for the
+ * outbound applier, which never reads a nested string's list: a primitive
+ * string is written whole, and a Y.Text child is diffed by its own
+ * patchSharedType call.
+ * - `"update"`: an update change carrying the new string, for the inbound
+ * state applier, where applying the diff only rebuilds that same string.
+ *
+ * Both skip the O(NP) text diff, which is quadratic in the edit distance:
+ * replacing a 4k-char string cost ~0.5 s and ~600 MB of heap per diff.
+ */
+export type NestedStringMode = "diff" | "defer" | "update";
+
+/**
+ * Stands in for the text diff of a nested string pair under
+ * `nestedStrings: "defer"`. A unique symbol rather than an empty list: it
+ * must never be applied as changes, and iterating it throws instead of
+ * silently applying nothing.
+ */
+export const deferredTextDiff = Symbol("deferredTextDiff");
+
+/**
+ * The change for an unequal pair of nested strings under a mode that does
+ * not diff them (see NestedStringMode).
+ */
+const getNestedStringChange = (
+  key: string | number,
+  value: string,
+  nestedStrings: Exclude<NestedStringMode, "diff">
+): Change => {
+  return nestedStrings === "defer"
+    ? [changeType.pending, key, deferredTextDiff]
+    : [changeType.update, key, value];
+};
+
+/**
  * Options for array diffing.
  */
 interface ArrayDiffOptions {
   /** The caller's previous state for the same array (alignment hint). */
   previousA?: unknown[];
+  /** How unequal string elements are described (see NestedStringMode). */
+  nestedStrings?: NestedStringMode;
 }
 
-const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOptions = {}): Change[] => {
+const getArrayChanges = (
+  a: unknown[],
+  b: unknown[],
+  { previousA, nestedStrings = "diff" }: ArrayDiffOptions = {}
+): Change[] => {
   const changeList: Change[] = [];
   let finalIndices = 0;
   let bOffset = 0;
@@ -331,11 +548,14 @@ const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOpt
     }
 
     let isMatchFound = false;
+    // Set when the nearest shift loses to an in-place replacement (see
+    // isShiftPreferredOverReplace); the replacement below then runs directly.
+    let isReplacePreferred = false;
 
     for (let k = 0; k <= LOOKAHEAD_WINDOW; k = k + 1) {
       if (bIndex + k < b.length) {
         const bValue = b[bIndex + k];
-        const isStrictMatch = value === bValue;
+        const isStrictMatch = isSameElement(value, bValue);
         const isDeepMatch =
           !isStrictMatch &&
           isDiffable(value) &&
@@ -346,6 +566,10 @@ const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOpt
 
         if (isStrictMatch || isDeepMatch) {
           if (k > 0) {
+            if (!isShiftPreferredOverReplace(a, b, index, bIndex, index, bIndex + k, LOOKAHEAD_WINDOW)) {
+              isReplacePreferred = true;
+              break;
+            }
             for (let insertIdx = 0; insertIdx < k; insertIdx = insertIdx + 1) {
               changeList.push([changeType.insert, bIndex + insertIdx, b[bIndex + insertIdx]]);
             }
@@ -361,7 +585,7 @@ const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOpt
 
       if (k > 0 && index + k < a.length) {
         const nextA = a[index + k];
-        const isStrictMatch = nextA === b[bIndex];
+        const isStrictMatch = isSameElement(nextA, b[bIndex]);
         const isDeepMatch =
           !isStrictMatch &&
           isDiffable(nextA) &&
@@ -371,6 +595,10 @@ const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOpt
             : false;
 
         if (isStrictMatch || isDeepMatch) {
+          if (!isShiftPreferredOverReplace(a, b, index, bIndex, index + k, bIndex, LOOKAHEAD_WINDOW)) {
+            isReplacePreferred = true;
+            break;
+          }
           for (let deleteIdx = 0; deleteIdx < k; deleteIdx = deleteIdx + 1) {
             changeList.push([changeType.delete, bIndex, undefined]);
           }
@@ -388,8 +616,9 @@ const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOpt
 
     // Extended identity scan (see identityScanBudget above): look past the
     // deep-equality window for a strict-identity alignment on either side,
-    // and take the shorter shift when both exist.
-    if (identityScanBudget > 0) {
+    // and take the shorter shift when both exist. A shift it finds must
+    // still beat an in-place replacement, like the in-window ones.
+    if (!isReplacePreferred && identityScanBudget > 0) {
       const bTarget = b[bIndex];
       let deleteShift = -1;
 
@@ -471,7 +700,11 @@ const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOpt
         }
       }
 
-      if (deleteShift !== -1 && (insertShift === -1 || deleteShift <= insertShift)) {
+      if (
+        deleteShift !== -1 &&
+        (insertShift === -1 || deleteShift <= insertShift) &&
+        isShiftPreferredOverReplace(a, b, index, bIndex, index + deleteShift, bIndex, LOOKAHEAD_WINDOW)
+      ) {
         // Mirror of the in-window delete branch with k = deleteShift.
         for (let deleteIdx = 0; deleteIdx < deleteShift; deleteIdx = deleteIdx + 1) {
           changeList.push([changeType.delete, bIndex, undefined]);
@@ -481,7 +714,10 @@ const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOpt
         continue;
       }
 
-      if (insertShift !== -1) {
+      if (
+        insertShift !== -1 &&
+        isShiftPreferredOverReplace(a, b, index, bIndex, index, bIndex + insertShift, LOOKAHEAD_WINDOW)
+      ) {
         // Mirror of the in-window insert branch with k = insertShift.
         for (let insertIdx = 0; insertIdx < insertShift; insertIdx = insertIdx + 1) {
           changeList.push([changeType.insert, bIndex + insertIdx, b[bIndex + insertIdx]]);
@@ -493,10 +729,15 @@ const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOpt
     }
 
     if (isDiffable(value) && isDiffable(b[bIndex]) && isSameType(value, b[bIndex])) {
-      const currentDiff = getChanges(value, b[bIndex]);
+      if (typeof value === "string" && nestedStrings !== "diff") {
+        // Unequal: the lookahead's k = 0 step already matched equal strings.
+        changeList.push(getNestedStringChange(bIndex, b[bIndex] as string, nestedStrings));
+      } else {
+        const currentDiff = getChanges(value, b[bIndex], { nestedStrings });
 
-      if (currentDiff.length > 0) {
-        changeList.push([changeType.pending, bIndex, currentDiff]);
+        if (currentDiff.length > 0) {
+          changeList.push([changeType.pending, bIndex, currentDiff]);
+        }
       }
       finalIndices = finalIndices + 1;
     } else {
@@ -516,35 +757,89 @@ const getArrayChanges = (a: unknown[], b: unknown[], { previousA }: ArrayDiffOpt
   return changeList;
 };
 
-const getRecordChanges = (a: Record<string, unknown>, b: Record<string, unknown>): Change[] => {
-  const changeList: Change[] = [];
+/**
+ * The result of a record diff that finds nothing, shared so that unchanged
+ * subtrees allocate no change lists. Frozen: a push onto a returned list
+ * throws instead of corrupting every later empty record diff.
+ */
+const noRecordChanges = Object.freeze<Change[]>([]) as Change[];
 
-  for (const [property, value] of Object.entries(a)) {
-    if (!(property in b) && !(value instanceof Function)) {
+const getRecordChanges = (
+  a: Record<string, unknown>,
+  b: Record<string, unknown>,
+  nestedStrings: NestedStringMode
+): Change[] => {
+  /*
+   * Single pass over records: each changed child is recursed into once, and
+   * its pending change is kept only if its list is non-empty. Prefiltering
+   * every child with isDeepEqualForDiff would fully walk each sibling before
+   * the first difference and then walk it again in the recursion, once per
+   * ancestor level, so a change's cost would grow with its key position and
+   * depth. Unchanged subtrees stay allocation-free instead: Object.keys
+   * rather than Object.entries (no tuples), and the change list is
+   * allocated only for the first change.
+   */
+  let changeList: Change[] | undefined;
+
+  /*
+   * Membership is own-property only: `in` walks the prototype chain, so a
+   * removed key named like an Object.prototype member ("toString",
+   * "valueOf", ...) would still look present and its delete would be lost.
+   */
+  for (const property of Object.keys(a)) {
+    if (!Object.hasOwn(b, property) && !(a[property] instanceof Function)) {
+      changeList = changeList ?? [];
       changeList.push([changeType.delete, property, undefined]);
     }
   }
 
-  for (const [property, value] of Object.entries(b)) {
-    if (!(property in a)) {
+  for (const property of Object.keys(b)) {
+    const value = b[property];
+
+    if (!Object.hasOwn(a, property)) {
+      changeList = changeList ?? [];
       changeList.push([changeType.insert, property, value]);
-    } else if (isDiffable(a[property]) && isDiffable(value) && isSameType(a[property], value)) {
+      continue;
+    }
+
+    const other = a[property];
+
+    // Unchanged leaves stop here: equal strings never reach the text diff.
+    if (isSameValueZero(other, value)) {
+      continue;
+    }
+
+    if (isDiffable(other) && isDiffable(value) && isSameType(other, value)) {
       /*
-       * Equality prefilter: for unchanged subtrees (the common case in a
-       * full-tree diff), the early-exit comparison avoids building and
-       * discarding a whole tree of empty change lists. isDeepEqualForDiff
-       * matches `getChanges(x, y).length === 0` exactly, so a `false` here
-       * guarantees a non-empty change list.
+       * Arrays keep the early-exit prefilter: getChanges would make an equal
+       * array (the common case) pay a toYArrayElements scan and the
+       * lookahead setup. Re-walking a changed array's leading elements stays
+       * at this one level, as the records below recurse in a single pass.
+       * isDeepEqualForDiff matches `getChanges(x, y).length === 0` exactly.
        */
-      if (!isDeepEqualForDiff(a[property], value)) {
-        changeList.push([changeType.pending, property, getChanges(a[property], value)]);
+      if (Array.isArray(value) && isDeepEqualForDiff(other, value)) {
+        continue;
       }
-    } else if (a[property] !== value) {
+      if (typeof value === "string" && nestedStrings !== "diff") {
+        // Unequal (isSameValueZero above): described without being diffed.
+        changeList = changeList ?? [];
+        changeList.push(getNestedStringChange(property, value, nestedStrings));
+        continue;
+      }
+
+      const childChanges = getChanges(other, value, { nestedStrings });
+
+      if (childChanges.length > 0) {
+        changeList = changeList ?? [];
+        changeList.push([changeType.pending, property, childChanges]);
+      }
+    } else {
+      changeList = changeList ?? [];
       changeList.push([changeType.update, property, value]);
     }
   }
 
-  return changeList;
+  return changeList ?? noRecordChanges;
 };
 
 /**
@@ -558,8 +853,21 @@ export interface GetChangesOptions {
    * splices larger than the deep-equality lookahead window be detected at
    * pointer cost and confirmed with one deep equality against `a` (see
    * getArrayChanges). Ignored for strings and records.
+   *
+   * Top-level only: nested diffs never take it, and must not. The outbound
+   * applier applies a nested change list instead of re-diffing that child
+   * (isDiffedFromDoc in patching.ts), so every nested list must be exactly
+   * what a direct getChanges call on the same pair (with the same
+   * `nestedStrings` mode) returns. A deferred string pair is no list, so
+   * the applier re-diffs that child (a Y.Text) itself.
    */
   previousA?: unknown;
+
+  /**
+   * Internal: how unequal NESTED string pairs are described, at every depth
+   * (see NestedStringMode). Defaults to `"diff"`.
+   */
+  nestedStrings?: NestedStringMode;
 }
 
 /**
@@ -568,17 +876,31 @@ export interface GetChangesOptions {
  * @param a - The value to change from (for shared types: their JSON).
  * @param b - The value to change to (the new state).
  * @param options - Diff options; see {@link GetChangesOptions} for the
- * array alignment hint.
+ * array alignment hint and the nested string mode.
  */
-export const getChanges = (a: Diffable, b: Diffable, { previousA }: GetChangesOptions = {}): Change[] => {
+export const getChanges = (
+  a: Diffable,
+  b: Diffable,
+  { previousA, nestedStrings = "diff" }: GetChangesOptions = {}
+): Change[] => {
   if (typeof a === "string" && typeof b === "string") {
     return getChangesText(a, b);
   }
   if (Array.isArray(a) && Array.isArray(b)) {
-    return getArrayChanges(a, b, Array.isArray(previousA) ? { previousA } : {});
+    /*
+     * Diff toward the elements a Y.Array can actually hold (undefined -> null,
+     * functions dropped) so that an already-normalized doc yields no changes
+     * and the emitted indices match the elements the applier inserts.
+     * `previousA` is a previous `b`, so it is normalized the same way.
+     */
+    return getArrayChanges(
+      a,
+      toYArrayElements(b),
+      Array.isArray(previousA) ? { nestedStrings, "previousA": toYArrayElements(previousA) } : { nestedStrings }
+    );
   }
   if (isRecord(a) && isRecord(b)) {
-    return getRecordChanges(a, b);
+    return getRecordChanges(a, b, nestedStrings);
   }
 
   return [];

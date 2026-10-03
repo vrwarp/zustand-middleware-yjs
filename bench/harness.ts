@@ -22,6 +22,21 @@ export interface BenchOptions {
   setup?: () => unknown;
 }
 
+const summarize = (name: string, runs: number, samples: number[]): BenchResult => {
+  samples.sort((left, right) => left - right);
+
+  const mean = samples.reduce((sum, sample) => sum + sample, 0) / samples.length;
+
+  return {
+    name,
+    runs,
+    medianMs: samples[Math.floor(samples.length / 2)],
+    meanMs: mean,
+    p95Ms: samples[Math.min(samples.length - 1, Math.ceil(samples.length * 0.95) - 1)],
+    minMs: samples[0],
+  };
+};
+
 export const bench = (
   name: string,
   fn: (fixture: unknown) => void,
@@ -41,18 +56,52 @@ export const bench = (
     samples.push(performance.now() - start);
   }
 
-  samples.sort((left, right) => left - right);
+  return summarize(name, runs, samples);
+};
 
-  const mean = samples.reduce((sum, sample) => sum + sample, 0) / samples.length;
+export interface AsyncBenchOptions extends BenchOptions {
+  /**
+   * Untimed hook awaited after every run (warmups included). Use it to drain
+   * the microtask a run scheduled (the middleware batches inbound patches on
+   * one), so that work neither leaks into the next sample nor keeps every
+   * fixture alive until the synchronous suite ends.
+   */
+  afterRun?: (fixture: unknown) => Promise<void> | void;
+}
 
-  return {
-    name,
-    runs,
-    medianMs: samples[Math.floor(samples.length / 2)],
-    meanMs: mean,
-    p95Ms: samples[Math.min(samples.length - 1, Math.ceil(samples.length * 0.95) - 1)],
-    minMs: samples[0],
-  };
+/**
+ * Same as `bench`, for scenarios whose timed part is synchronous but whose
+ * fixtures leave asynchronous work behind.
+ *
+ * @param name - Row label.
+ * @param fn - The timed (synchronous) body.
+ * @param options - Runs, warmups, per-run setup and the untimed afterRun hook.
+ * @returns A promise for the summarized samples.
+ */
+export const benchAsync = async (
+  name: string,
+  fn: (fixture: unknown) => void,
+  { runs = 20, warmupRuns = 3, setup, afterRun }: AsyncBenchOptions = {}
+): Promise<BenchResult> => {
+  for (let index = 0; index < warmupRuns; index = index + 1) {
+    const fixture = setup?.();
+
+    fn(fixture);
+    await afterRun?.(fixture);
+  }
+
+  const samples: number[] = [];
+
+  for (let index = 0; index < runs; index = index + 1) {
+    const fixture = setup?.();
+    const start = performance.now();
+
+    fn(fixture);
+    samples.push(performance.now() - start);
+    await afterRun?.(fixture);
+  }
+
+  return summarize(name, runs, samples);
 };
 
 /** Deterministic PRNG (mulberry32) so fixtures are identical across runs. */

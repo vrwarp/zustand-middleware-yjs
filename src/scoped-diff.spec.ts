@@ -1,7 +1,7 @@
 import * as fc from "fast-check";
 import * as Y from "yjs";
 import { createStore } from "zustand/vanilla";
-import yjs, { __scopedDiffDevSampling } from ".";
+import yjs, { __scopedDiffDevSampling, getYjsStoreHandle } from ".";
 import { assertScopedDiffConvergence } from "./patching";
 
 /**
@@ -104,9 +104,11 @@ afterEach(() => {
 /**
  * Touch every top-level key once. After this seed both diff modes have written
  * every key to the doc, so from here on scoped and full diff must produce
- * IDENTICAL docs. (Before a key's first write the modes legitimately differ:
- * scoped diff defers never-set defaults — the lazy-backfill contract pinned in
- * D.6/C.7 — while the legacy full diff writes all keys eagerly.)
+ * IDENTICAL docs. (Under the default 'replace' hydration used here a
+ * hydrated scoped store already agrees before the seed — its flush backfills
+ * never-set defaults, D.6. Before hydration, and under merge-defaults, the
+ * modes legitimately differ before a key's first write: scoped diff defers
+ * never-set defaults — the backfill contract pinned in D.6/C.7.)
  */
 const seed = (store: { getState: () => State }): void => {
   store.getState().inc();
@@ -372,10 +374,61 @@ describe("contract D.5 — no full-tree serialization on a scoped flush", () => 
 });
 
 describe("contract D.6 — first flush and lazy backfill", () => {
-  it("the first flush is scoped too: only keys changed since creation are written (defaults stay lazy)", async () => {
+  it("under 'replace' (the default) a hydrated store's first flush backfills never-set defaults, matching the full diff", async () => {
+    // A doc-absent key is deleted by every full inbound patch under
+    // 'replace' (reload, peer), so the scoped flush must write it eagerly
+    // once the doc is known to be loaded (here: a new doc, marked hydrated).
     const scopedDoc = new Y.Doc();
     const scopedStore = createStore<State>(
       yjs(scopedDoc, "s", creator, { ...OPTS, scopedDiff: true }),
+    );
+    const fullDoc = new Y.Doc();
+    const fullStore = createStore<State>(yjs(fullDoc, "s", creator, OPTS));
+
+    getYjsStoreHandle(scopedStore).markHydrated();
+    scopedStore.getState().setItem("a", 1, ["x"]);
+    fullStore.getState().setItem("a", 1, ["x"]);
+    await drain();
+
+    expect(scopedDoc.getMap("s").toJSON()).toEqual({
+      count: 0,
+      label: "start",
+      items: { a: { n: 1, tags: ["x"] } },
+    });
+    expect(scopedDoc.getMap("s").toJSON()).toEqual(fullDoc.getMap("s").toJSON());
+  });
+
+  it("under 'replace' a flush before hydration is scoped (the doc may not have loaded yet); hydrating backfills the rest", async () => {
+    const scopedDoc = new Y.Doc();
+    const scopedStore = createStore<State>(
+      yjs(scopedDoc, "s", creator, { ...OPTS, scopedDiff: true }),
+    );
+
+    scopedStore.getState().setItem("a", 1, ["x"]);
+    await drain();
+
+    expect(scopedDoc.getMap("s").toJSON()).toEqual({
+      items: { a: { n: 1, tags: ["x"] } },
+    });
+
+    getYjsStoreHandle(scopedStore).markHydrated();
+    await drain();
+
+    expect(scopedDoc.getMap("s").toJSON()).toEqual({
+      count: 0,
+      label: "start",
+      items: { a: { n: 1, tags: ["x"] } },
+    });
+  });
+
+  it("under merge-defaults the first flush is scoped: only keys changed since creation are written (defaults stay lazy)", async () => {
+    const scopedDoc = new Y.Doc();
+    const scopedStore = createStore<State>(
+      yjs(scopedDoc, "s", creator, {
+        ...OPTS,
+        scopedDiff: true,
+        hydration: "merge-defaults",
+      }),
     );
 
     scopedStore.getState().setItem("a", 1, ["x"]);

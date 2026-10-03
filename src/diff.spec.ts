@@ -1,5 +1,6 @@
-import { changeType, } from "./types";
-import { getChanges, } from "./diff";
+import * as fc from "fast-check";
+import { type Change, changeType, } from "./types";
+import { getChanges, isDeepEqualForDiff, } from "./diff";
 
 describe("getChanges", () => {
   describe("When given objects", () => {
@@ -122,8 +123,7 @@ describe("getChanges", () => {
             changeType.pending,
             "foo",
             [
-              [changeType.delete, 0, undefined],
-              [changeType.insert, 1, 2]
+              [changeType.update, 0, 2]
             ]
           ]
         ]
@@ -212,45 +212,66 @@ describe("getChanges", () => {
         ]
       ],
       /*
-       * This is an edge case in how we perform change detection.
+       * A repeated value in A used to confuse the look ahead: B's position 2
+       * (3) matches A's position 1 (3), which reads as "2 was inserted in
+       * front of the 3", after which A's second 3 has nothing left to match
+       * and is deleted — an insert plus a delete that recreates an element
+       * nobody changed (losing any concurrent remote edit to it).
        *
-       * In this case, A contains a repeated sequence of digits that is not in
-       * B. This confuses the look ahead, which, in order to detect an update,
-       * looks to the next value in B to see if the value found in A has just
-       * moved.
-       *
-       * When it sees that A's position 1, with a value of 3, is not the same as
-       * B's position 1 (with a value of 2), the look ahead checks to see if
-       * B's position 2 is the same as A's position 1. It is, so the algorithm
-       * assumes that an insertion took place in B.
-       *
-       * This insertion causes an increase in the indexing offset for B. When
-       * that happens, the next iteration is looking at B position 3 (does not
-       * exist) instead of position 3. Because B position 3 does not exist, it
-       * is assumed that the duplicate value was deleted in B.
-       *
-       * As far as I know, there's no way around this. One option is that we
-       * could increase the look ahead. But by doing that, we change the minimum
-       * length of the sequence this happens with. If we added, say, a look
-       * ahead of two positions, we'd eliminate the issue with values repeated
-       * twice, but not for values repeated three times.
-       *
-       * Another option is to retroactively recognize a repeated sequence and
-       * then correct the previous insertion to an update when we try to delete
-       * the end of the sequence. However, this has other issues, such as the
-       * ambiguity about what to do when an update happens at the beginning of
-       * a repeated sequence and a delete happens at the end. That could be
-       * construed as an insert at the beginning and two deletes at the end.
-       *
-       * At the end of the day, a correct transformation is better than a
-       * 'correct' change list.
+       * The next elements (A's and B's position 2) already line up, though,
+       * and the shift does not line up a longer run than they do, so the
+       * change is read as a single in-place update of position 1.
        */
       [
         [1, 3, 3],
         [1, 2, 3],
         [
-          [changeType.insert, 1, 2],
-          [changeType.delete, 3, undefined]
+          [changeType.update, 1, 2]
+        ]
+      ],
+      // A shift still wins when it lines up a longer run than an in-place
+      // replacement: this is a head removal, not an update plus a delete.
+      [
+        [9, 1, 1, 2],
+        [1, 1, 2],
+        [
+          [changeType.delete, 0, undefined]
+        ]
+      ],
+      // ...and when the runs tie (here both reach the look-ahead cap), the
+      // shift wins if it brings the remaining lengths closer together.
+      [
+        [9, ...Array.from({ "length": 12 }, () => 0)],
+        Array.from({ "length": 12 }, () => 0),
+        [
+          [changeType.delete, 0, undefined]
+        ]
+      ],
+      // A block prepended to an array with alternating duplicates is still
+      // inserted, rather than read as in-place replacements.
+      [
+        [{ "id": 1, }, null, { "id": 2, }, null],
+        [{ "id": 0, }, null, { "id": 1, }, null, { "id": 2, }, null],
+        [
+          [changeType.insert, 0, { "id": 0, }],
+          [changeType.insert, 1, null]
+        ]
+      ],
+      // A strict-identity match past the window is not taken either when the
+      // next elements already line up: replace slot 0, keep the zeros.
+      [
+        [1, ...Array.from({ "length": 11 }, () => 0), 2],
+        [2, ...Array.from({ "length": 11 }, () => 0), 2],
+        [
+          [changeType.update, 0, 2]
+        ]
+      ],
+      [
+        [1, ...Array.from({ "length": 11 }, () => 0)],
+        [2, ...Array.from({ "length": 10 }, () => 0), 1],
+        [
+          [changeType.update, 0, 2],
+          [changeType.update, 11, 1]
         ]
       ],
       [
@@ -360,6 +381,17 @@ describe("getChanges", () => {
         expect(getChanges(a, b)).toStrictEqual(changes);
       }
     );
+
+    // A plain JSON doc value (ContentAny) keeps undefined inside its arrays;
+    // it must compare equal to b's stored form (null), its own copy included.
+    it.each([
+      [[[undefined]], [[undefined]]],
+      [[[undefined]], [[null]]],
+      [[{ "tags": [undefined, 1] }], [{ "tags": [undefined, 1] }]],
+    ])("Compares an undefined element of `a` as null", (a, b) => {
+      expect(getChanges(a, b)).toStrictEqual([]);
+      expect(isDeepEqualForDiff(a, b)).toBe(true);
+    });
 
     describe("Deletion Lookahead (FIFO Queue Operations)", () => {
       it("Detects primitive shift+push as DELETE+INSERT instead of N updates", () => {
@@ -479,8 +511,7 @@ describe("getChanges", () => {
         "",
         "😀",
         [
-          [changeType.insert, 0, "\uD83D"],
-          [changeType.insert, 1, "\uDE00"]
+          [changeType.insert, 0, "😀"]
         ]
       ],
       [
@@ -494,19 +525,42 @@ describe("getChanges", () => {
       [
         "😀",
         "😁",
-        // The shared high surrogate \uD83D is common-prefix-trimmed, so only
-        // the differing low surrogate is deleted and reinserted.
+        // The shared high surrogate \uD83D is NOT common-prefix-trimmed:
+        // splitting the pair would make Y.Text replace both halves with
+        // U+FFFD, so the whole code point is deleted and reinserted.
         [
-          [changeType.delete, 1, undefined],
-          [changeType.insert, 1, "\uDE01"]
+          [changeType.delete, 0, undefined],
+          [changeType.delete, 0, undefined],
+          [changeType.insert, 0, "😁"]
         ]
       ],
       [
         "I love 😀",
         "I love 😁",
         [
-          [changeType.delete, 8, undefined],
-          [changeType.insert, 8, "\uDE01"]
+          [changeType.delete, 7, undefined],
+          [changeType.delete, 7, undefined],
+          [changeType.insert, 7, "😁"]
+        ]
+      ],
+      [
+        "😀",
+        "😂😀",
+        // Shared surrogates on both sides of the edit are kept whole too.
+        [[changeType.insert, 0, "😂"]]
+      ],
+      [
+        "x😀-y",
+        "z😁-w",
+        // No common prefix or suffix: the inner diff compares code points.
+        [
+          [changeType.delete, 0, undefined],
+          [changeType.delete, 0, undefined],
+          [changeType.delete, 0, undefined],
+          [changeType.insert, 0, "z"],
+          [changeType.insert, 1, "😁"],
+          [changeType.delete, 4, undefined],
+          [changeType.insert, 4, "w"]
         ]
       ]
     ])(
@@ -557,5 +611,149 @@ describe("getChanges", () => {
         expect(getChanges(a, b)).toStrictEqual(diff);
       }
     );
+  });
+});
+describe("isDeepEqualForDiff and getChanges agree", () => {
+  /*
+   * getRecordChanges recurses into every changed same-type child and emits a
+   * pending change only when the child's list is non-empty, which reproduces
+   * the old isDeepEqualForDiff-prefiltered output exactly as long as
+   * isDeepEqualForDiff(a, b) === (getChanges(a, b).length === 0). The array
+   * lookahead also uses isDeepEqualForDiff as its equality test.
+   *
+   * Pairs are generated as twins (equal by default, diverging at random
+   * nodes) so that deep near-equal trees, the full-tree diff's common case,
+   * are frequent. Leaves cover the differ's quirks: NaN, -0, undefined,
+   * functions (shared and distinct), surrogate pairs and keys named like
+   * Object.prototype members.
+   */
+  type Pair = [left: unknown, right: unknown];
+
+  const sharedFunction = (): number => 1;
+  const otherFunction = (): number => 2;
+  const key = fc.constantFrom("a", "b", "c", "toString", "valueOf", "hasOwnProperty");
+  const leaf = fc.oneof(
+    fc.constantFrom(null, undefined, true, false, 0, -0, 1, Number.NaN, sharedFunction, otherFunction),
+    fc.constantFrom("", "x", "xy", "😀", "😁", "a😀b")
+  );
+  const toRecord = (entries: [string, unknown][]): Record<string, unknown> => {
+    const record: Record<string, unknown> = {};
+
+    for (const [property, value] of entries) {
+      record[property] = value;
+    }
+
+    return record;
+  };
+
+  const { arrayPair, recordPair, stringPair } = fc.letrec<{
+    pair: Pair;
+    arrayPair: Pair;
+    recordPair: Pair;
+    stringPair: Pair;
+  }>((tie) => ({
+    "pair": fc.oneof(
+      { "depthSize": "small" },
+      { "arbitrary": leaf.map((value): Pair => [value, value]), "weight": 4 },
+      { "arbitrary": fc.tuple(leaf, leaf), "weight": 1 },
+      { "arbitrary": tie("stringPair"), "weight": 1 },
+      { "arbitrary": tie("arrayPair"), "weight": 2 },
+      { "arbitrary": tie("recordPair"), "weight": 2 },
+      // A container shared by reference on both sides (state-vs-state).
+      { "arbitrary": tie("recordPair").map(([left]): Pair => [left, left]), "weight": 1 }
+    ),
+    "arrayPair": fc.tuple(
+      fc.array(tie("pair"), { "maxLength": 4 }),
+      fc.array(leaf, { "maxLength": 1 }),
+      fc.boolean()
+    ).map(([pairs, extra, isExtraOnLeft]): Pair => {
+      const left = pairs.map(([element]) => element);
+      const right = pairs.map(([, element]) => element);
+
+      (isExtraOnLeft ? left : right).push(...extra);
+
+      return [left, right];
+    }),
+    "recordPair": fc.tuple(
+      fc.uniqueArray(fc.tuple(key, tie("pair")), { "maxLength": 4, "selector": ([property]) => property }),
+      fc.array(fc.tuple(key, leaf), { "maxLength": 1 }),
+      fc.array(fc.tuple(key, leaf), { "maxLength": 1 })
+    ).map(([pairs, onlyLeft, onlyRight]): Pair => {
+      const left = toRecord(pairs.map(([property, [value]]) => [property, value]));
+      const right = toRecord(pairs.map(([property, [, value]]) => [property, value]));
+
+      for (const [property, value] of onlyLeft) {
+        if (!Object.hasOwn(left, property)) {
+          left[property] = value;
+        }
+      }
+      for (const [property, value] of onlyRight) {
+        if (!Object.hasOwn(right, property)) {
+          right[property] = value;
+        }
+      }
+
+      return [left, right];
+    }),
+    "stringPair": fc.oneof(
+      fc.string({ "maxLength": 4 }).map((text): Pair => [text, text]),
+      fc.tuple(fc.string({ "maxLength": 4 }), fc.string({ "maxLength": 4 }))
+    ),
+  }));
+  // getChanges only diffs same-type diffable pairs (anything else is []).
+  const diffablePair = fc.oneof(recordPair, arrayPair, stringPair);
+
+  it("isDeepEqualForDiff(a, b) is exactly getChanges(a, b).length === 0", () => {
+    fc.assert(fc.property(diffablePair, ([left, right]) => {
+      expect(isDeepEqualForDiff(left, right)).toBe(
+        getChanges(left as Record<string, unknown>, right as Record<string, unknown>).length === 0
+      );
+    }), { "numRuns": 2_000 });
+  });
+
+  it("a record diff matches the isDeepEqualForDiff-prefiltered reference", () => {
+    const isRecord = (value: unknown): value is Record<string, unknown> =>
+      typeof value === "object" && value !== null && !Array.isArray(value);
+    const isSameValueZero = (left: unknown, right: unknown): boolean =>
+      left === right || (Number.isNaN(left) && Number.isNaN(right));
+    const isDiffableSameType = (left: unknown, right: unknown): boolean =>
+      (typeof left === "string" && typeof right === "string") ||
+      (Array.isArray(left) && Array.isArray(right)) ||
+      (isRecord(left) && isRecord(right));
+
+    // The pre-single-pass getRecordChanges, recursing through itself.
+    const referenceChanges = (a: unknown, b: unknown): Change[] => {
+      if (!isRecord(a) || !isRecord(b)) {
+        return getChanges(a as unknown[], b as unknown[]);
+      }
+
+      const changeList: Change[] = [];
+
+      for (const [property, value] of Object.entries(a)) {
+        if (!Object.hasOwn(b, property) && !(value instanceof Function)) {
+          changeList.push([changeType.delete, property, undefined]);
+        }
+      }
+      for (const [property, value] of Object.entries(b)) {
+        if (!Object.hasOwn(a, property)) {
+          changeList.push([changeType.insert, property, value]);
+        } else if (isDiffableSameType(a[property], value)) {
+          if (!isDeepEqualForDiff(a[property], value)) {
+            changeList.push([changeType.pending, property, referenceChanges(a[property], value)]);
+          }
+        } else if (!isSameValueZero(a[property], value)) {
+          changeList.push([changeType.update, property, value]);
+        }
+      }
+
+      return changeList;
+    };
+
+    fc.assert(fc.property(recordPair, ([left, right]) => {
+      const a = left as Record<string, unknown>;
+      const b = right as Record<string, unknown>;
+
+      expect(getChanges(a, b)).toStrictEqual(referenceChanges(a, b));
+    }), { "numRuns": 2_000 });
   });
 });

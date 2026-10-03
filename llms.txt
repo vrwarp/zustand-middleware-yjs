@@ -119,6 +119,7 @@ The middleware also attaches a per-store handle (`api.yjs`, modeled on
 interface YjsStoreHandle {
   hasHydrated(): boolean;          // true once the first patch from the doc applied
   whenHydrated(): Promise<void>;   // resolves strictly after the hydrating setState
+                                   // (or after a first patch that changed nothing)
   markHydrated(): void;            // mark hydrated when the doc is synced but empty
   flush(): void;                   // drain the pending outbound batch synchronously
   isObsolete(): boolean;           // true once the schema-version poison pill fired
@@ -132,7 +133,7 @@ The middleware maps JavaScript/Zustand data types to Yjs shared types automatica
 
 -   **`Object` (Plain)** → `Y.Map` Keys are observed. Changes to properties trigger Yjs updates.
 
--   **`Array`** → `Y.Array` Pushes, splices, and inserts are mapped to Yjs array operations.
+-   **`Array`** → `Y.Array` Pushes, splices, and inserts are mapped to Yjs array operations. As in JSON, an `undefined` element (or a sparse-array hole) is stored as `null`; function elements are dropped.
 
 -   **`Primitive` (string, number, boolean)** → Native Stored as primitive values within the parent `Y.Map` or `Y.Array`.
 

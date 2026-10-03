@@ -13,6 +13,13 @@
  *    editing session (many aggregated Yjs items).
  * 3. Array diffing cost on large arrays (lookahead equality checks).
  * 4. Full-tree vs scoped outbound flush; inbound patch cost.
+ * 5. String writes whose nested text diff is computed and thrown away
+ *    (bench/string-diffs.ts).
+ * 6. Inbound catch-up observer cost: many in-place edits to elements of a
+ *    large object array arriving in one tick (bench/inbound-catchup.ts).
+ * 7. Nested change lists re-diffed at every pending level (nested-lists.ts).
+ * 8. Full-tree record diff cost by the changed key's position
+ *    (bench/record-diff.ts).
  *
  * Run with: npm run bench
  */
@@ -29,7 +36,22 @@ import {
   makeRandom,
   randomText,
 } from "./harness";
-import { runVersicleBench } from "./versicle";
+import { runInboundCatchUpBench } from "./inbound-catchup";
+import { runInboundChildKeyBench } from "./inbound-child-keys";
+import { runInboundMixedBatchBench } from "./inbound-mixed-batch";
+import { runNestedListsBench } from "./nested-lists";
+import { runNoopInboundBench } from "./noop-inbound";
+import { formatRecordDeleteReport, runRecordDeleteBench } from "./record-delete";
+import { runRecordDiffBench } from "./record-diff";
+import { runStringDiffBench } from "./string-diffs";
+import {
+  benchColdStartSanitize,
+  runColdStartRepresentationBench,
+  runInboundBulkBench,
+  runSharedMapBench,
+  runVersicleBench,
+} from "./versicle";
+import { runYArrayRunsBench } from "./yarray-runs";
 
 // Deterministic perf runs: disable the DEV-only sampled convergence check so
 // scopedDiff numbers measure the flush itself, not the diagnostic.
@@ -355,6 +377,34 @@ const makeDeepState = (
 }
 
 /* -------------------------------------------------------------------------
+ * 4c. Y.Array bulk primitive inserts/updates through the middleware
+ *     (insert/update runs, docs/performance.md §16; see bench/yarray-runs.ts)
+ * ---------------------------------------------------------------------- */
+
+console.error("  running Y.Array bulk-insert scenarios...");
+
+const yArrayRunsReport = runYArrayRunsBench(record);
+
+/* -------------------------------------------------------------------------
+ * 4d. Nested change lists recomputed at every pending level
+ *     (bench/nested-lists.ts: getChanges calls per flush, state records visited,
+ *     changed-element serializations)
+ * ---------------------------------------------------------------------- */
+
+for (const { meta, result } of runNestedListsBench()) {
+  record(result, meta);
+}
+
+/* -------------------------------------------------------------------------
+ * 4e. Full-tree record diff: cost by the changed key's position
+ *     (see bench/record-diff.ts; runnable on its own)
+ * ---------------------------------------------------------------------- */
+
+for (const { meta, result } of runRecordDiffBench()) {
+  record(result, meta);
+}
+
+/* -------------------------------------------------------------------------
  * 5. End-to-end outbound flush: legacy full-tree diff vs scopedDiff
  * ---------------------------------------------------------------------- */
 
@@ -387,7 +437,9 @@ const makeStoreFixture = (isScopedDiff: boolean) => {
     })
   );
 
-  // Populate the doc (first flush = full tree) so timed runs measure steady state.
+  // Populate the doc (first flush = full tree once hydrated: a new doc, so
+  // mark it) so timed runs measure steady state.
+  getYjsStoreHandle(store).markHydrated();
   store.setState({ "warm": true });
   getYjsStoreHandle(store).flush();
 
@@ -438,6 +490,37 @@ for (const isScopedDiff of [false, true]) {
       patchStore(store, remote);
     }
   ), { keys: KEY_COUNT });
+}
+
+/* -------------------------------------------------------------------------
+ * 6b. String writes: text diffs computed and thrown away
+ *
+ * `textDiffs` = text diffs one operation ran; `needed` = text diffs it
+ * requires (0 for a primitive string or a receiver, 1 for a Y.Text edit).
+ * Run alone: see the header of bench/string-diffs.ts.
+ * ---------------------------------------------------------------------- */
+
+console.error("  running string-write scenarios...");
+
+for (const result of runStringDiffBench()) {
+  record(result, result.meta ?? {});
+}
+
+/* -------------------------------------------------------------------------
+ * 6c. Cold-start hydration, decomposed (versicle-shaped progress tree):
+ * Yjs toJSON() vs the inbound doc-JSON sanitize walk in computeInboundState.
+ * The meta columns carry deterministic counters from one untimed pass:
+ * isArrayCalls ~= (records + arrays + primitiveLeaves) + records means the
+ * walk recurses into every primitive leaf; everyCalls = one closure per
+ * container.
+ * ---------------------------------------------------------------------- */
+
+for (const books of [40, 120]) {
+  console.error(`  running cold-start sanitize decomposition: ${String(books)} books...`);
+
+  for (const { result, meta } of benchColdStartSanitize(books, 7)) {
+    record(result, meta);
+  }
 }
 
 /* -------------------------------------------------------------------------
@@ -679,12 +762,67 @@ console.log(`
 | Yjs item count | ${String(agedObjectReport.itemCount)} |
 | final map.toJSON() (ms) | ${agedObjectReport.finalToJsonMs.toFixed(3)} |
 `);
+// eslint-disable-next-line no-console
+console.log(yArrayRunsReport);
 
-console.error("  running versicle-shaped aging scenario...");
-runVersicleBench()
+console.error("  running inbound bulk record-delete scenario...");
+runRecordDeleteBench()
+  .then((recordDeleteResults) => {
+    // eslint-disable-next-line no-console
+    console.log(`\n${formatRecordDeleteReport(recordDeleteResults)}`);
+    console.error("  running inbound catch-up scenario...");
+
+    return runInboundCatchUpBench();
+  })
   .then((report) => {
     // eslint-disable-next-line no-console
     console.log(`\n${report}`);
+    console.error("  running versicle-shaped aging scenario...");
+
+    return runVersicleBench();
+  })
+  .then((report) => {
+    // eslint-disable-next-line no-console
+    console.log(`\n${report}`);
+    console.error("  running inbound child-key add / delete scenario...");
+
+    return runInboundChildKeyBench();
+  })
+  .then((report) => {
+    // eslint-disable-next-line no-console
+    console.log(`\n${report}`);
+    console.error("  running bulk inbound batch scenario...");
+
+    return runInboundBulkBench();
+  })
+  .then((report) => {
+    // eslint-disable-next-line no-console
+    console.log(`\n${report}`);
+    console.error("  running inbound mixed-batch scenario...");
+
+    return runInboundMixedBatchBench();
+  })
+  .then((report) => {
+    // eslint-disable-next-line no-console
+    console.log(`\n${report}`);
+    console.error("  running shared-map (syncedKeys) scenario...");
+
+    return runSharedMapBench();
+  })
+  .then((report) => {
+    // eslint-disable-next-line no-console
+    console.log(`\n${report}`);
+    console.error("  running no-op inbound scenarios...");
+
+    return runNoopInboundBench();
+  })
+  .then((report) => {
+    // eslint-disable-next-line no-console
+    console.log(`\n${report}`);
+
+    console.error("  running cold-start representation scenario...");
+    // eslint-disable-next-line no-console
+    console.log(`\n${runColdStartRepresentationBench()}`);
   })
   .catch((error: unknown) => {
     console.error(error);

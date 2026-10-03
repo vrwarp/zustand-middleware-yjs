@@ -4,9 +4,14 @@ import { createStore as createVanilla, } from "zustand/vanilla";
 import yjs from ".";
 
 describe("Fuzz testing", () => {
-  // Custom arbitrary for safe JSON values, excluding "unsafe" keys
-  const safeString = fc.string().filter((k) =>
-    !["valueOf", "toString", "__proto__", "constructor", "prototype"].includes(k));
+  // Custom arbitrary for safe JSON values, excluding "unsafe" keys. Keys
+  // named like Object.prototype members are mixed in on purpose: random
+  // strings would almost never produce them.
+  const safeString = fc.oneof(
+    fc.string(),
+    fc.constantFrom("toString", "valueOf", "hasOwnProperty")
+  ).filter((k) =>
+    !["__proto__", "constructor", "prototype"].includes(k));
 
   const safeJsonValue = fc.letrec((tie) =>
   ({
