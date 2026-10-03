@@ -1,6 +1,3 @@
-/**
- * @jest-environment node
- */
 /*
  * Regression: the Y.Text diff must never split a UTF-16 surrogate pair.
  *
@@ -13,9 +10,12 @@
  * still shows the right emoji. The "😀" -> "😀😂" case passes today and is
  * kept as a control.
  *
- * The node environment is used so the update encoder has a native TextEncoder
- * (under jsdom lib0 falls back to encodeURIComponent and the flush throws a
- * URIError instead), which lets the test assert on the visible text.
+ * Under jsdom there is no TextEncoder, so lib0 falls back to
+ * encodeURIComponent and encoding a split pair throws a URIError instead of
+ * writing U+FFFD; either way the bug fails these tests. They deliberately
+ * run in the default environment: a per-file `@jest-environment` docblock
+ * bypasses the coverage-reporting environment Stryker installs, which fails
+ * its dry run.
  */
 import * as fc from "fast-check";
 import { createStore } from "zustand/vanilla";
