@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
-  "_comment": "Mutation testing config. `npm run test:mutation` runs the full suite; CI runs the same thing weekly and fails under the break threshold. break=80 is a ratchet: the score was 74.76% before the guard and rare-branch tests landed and is 80.95% now, so it may be raised but must not be lowered.",
+  "_comment": "Mutation testing config. `npm run test:mutation` runs the full suite; CI runs the same mutants weekly, split across parallel shards (stryker.shard.config.mjs, merged by scripts/mutation/merge-shards.mjs), and fails under the break threshold. break=80 is a ratchet: the score was 74.76% before the guard and rare-branch tests landed and is 80.95% now, so it may be raised but must not be lowered.",
   "packageManager": "npm",
   "testRunner": "jest",
   "jest": {
