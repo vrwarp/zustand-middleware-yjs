@@ -16,7 +16,9 @@ export default [
       "**/*.config.js",
       "examples/**",
       "jest.config.ts",
-      "rollup.config.ts"
+      "rollup.config.ts",
+      "stryker.shard.config.mjs",
+      "scripts/mutation/**"
     ]
   },
   {
