@@ -1155,13 +1155,13 @@ const yjsImpl: YjsImpl = <S>(
         return;
       }
 
-      // 2. Initial Load Handling (unchanged behaviour).
+      // 2. Initial Load Handling.
       if (!isLoaded && transaction.origin !== api) {
         isLoaded = true;
         onLoaded?.();
       }
 
-      // 2. Local Echo Suppression.
+      // 3. Local Echo Suppression.
       // If we originated this transaction, the Zustand store is already
       // up-to-date. Skip the round-trip entirely.
       if (transaction.origin === api) {
@@ -1275,7 +1275,7 @@ const yjsImpl: YjsImpl = <S>(
         unappliedInboundTargets.set(event.target, changedKeys);
       }
 
-      // 3. Microtask Coalescing.
+      // 4. Microtask Coalescing.
       // Schedule at most one synchronisation per event-loop tick.
       if (!isUpdatePending) {
         isUpdatePending = true;
