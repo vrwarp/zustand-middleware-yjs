@@ -19,10 +19,10 @@ other middleware, such as Immer or Redux!
 
 ```tsx
 import React from "react";
-import { render } from "react-dom";
+import { createRoot } from "react-dom/client";
 
 import * as Y from "yjs";
-import create from "zustand";
+import { create } from "zustand";
 import yjs from "zustand-middleware-yjs";
 
 // Create a Y Doc to place our store in.
@@ -54,11 +54,10 @@ const useSharedStore = create(
 // Use the shared store like you normally would any other Zustand store.
 const App = () =>
 {
-  const { count, increment } = useSharedStore((state) =>
-    ({
-      count: state.count,
-      increment: state.increment
-    }));
+  // Select each value separately: Zustand 5 requires selectors to return a
+  // stable reference (an inline object literal would re-render forever).
+  const count = useSharedStore((state) => state.count);
+  const increment = useSharedStore((state) => state.increment);
 
   return (
     <>
@@ -68,10 +67,7 @@ const App = () =>
   );
 };
 
-render(
-  <App />,
-  document.getElementById("app-root")
-);
+createRoot(document.getElementById("app-root")).render(<App />);
 ```
 
 ## Options
@@ -83,6 +79,7 @@ export interface YjsOptions {
   atomicKeys?: string[];
   disableYText?: boolean;
   yTextKeys?: string[];
+  jsonElementKeys?: string[];
   onLoaded?: () => void;
   schemaVersion?: number;
   onObsolete?: (incomingVersion: number) => void;
@@ -120,6 +117,29 @@ const useSharedStore = create(
 ```
 
 **Migrations:** The middleware handles data migration automatically. If you change a key from being mapped to `Y.Text` to a plain string (e.g. by enabling `disableYText` or adding it to `atomicKeys`), the next time the value is updated in Zustand, it will seamlessly overwrite the `Y.Text` object in Yjs with the plain string. The reverse is also true. Likewise, a plain JSON object or array written into the map outside the middleware (e.g. `map.set("cfg", { a: 1 })` in a migration or server code) hydrates as-is and is replaced with a `Y.Map` / `Y.Array` the next time that value is updated in Zustand.
+
+### Storing array records as plain JSON (`jsonElementKeys`)
+
+For arrays of immutable records (log entries, reading sessions), list the key in
+`jsonElementKeys`. The object and array elements of an array stored under that
+key, at any depth, are then stored as plain JSON values instead of nested
+`Y.Map` / `Y.Array` structures. The array itself stays a `Y.Array`, so appends,
+removals and splices still merge per element, but a changed element is replaced
+whole (delete + insert).
+
+```tsx
+const useLog = create(
+  yjs(ydoc, "shared", (set) => ({ entries: [] }), {
+    jsonElementKeys: ["entries"],
+  })
+);
+```
+
+Use it only for records that are not edited once written: concurrent edits to
+one element do not merge per field (both replacements survive as separate
+elements), and strings inside an element are plain strings, never `Y.Text`
+(`atomicKeys` / `yTextKeys` do not apply inside it). Every client should list
+the same keys.
 
 ### Schema Version Guard (Poison Pill)
 
@@ -305,7 +325,7 @@ hydration.
     if the library is able to support Yjs protocols. This means that, for now,
     support for the awareness protocol is not planned.
       * This does not mean you cannot use awareness in your projects - see the
-        sister project [y-react](joebobmiles/y-react) for an example of using
+        sister project [y-react](https://github.com/joebobmiles/y-react) for an example of using
         awareness without the middleware.
  2. Array elements that JSON cannot represent are normalized before they are
     written to a `Y.Array`: an `undefined` element (or a hole in a sparse

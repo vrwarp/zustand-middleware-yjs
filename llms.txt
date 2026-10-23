@@ -56,6 +56,16 @@ interface YjsOptions {
   yTextKeys?: string[];
 
   /**
+   * Keys whose arrays hold immutable records (log entries, sessions). The
+   * object/array elements of an array under one of these keys, at any depth,
+   * are stored as plain JSON values instead of nested Y.Map / Y.Array. The
+   * array itself stays a Y.Array; a changed element is replaced whole, so use
+   * it only for records that are not edited once written. Strings inside an
+   * element are plain strings (atomicKeys / yTextKeys do not apply there).
+   */
+  jsonElementKeys?: string[];
+
+  /**
    * Optional callback fired when the store first loads existing data from the Y.Doc.
    */
   onLoaded?: () => void;
@@ -154,7 +164,7 @@ This is the standard boilerplate for connecting a store.
 
 ```
 import { create } from 'zustand';
-import { yjs } from 'zustand-middleware-yjs';
+import yjs from 'zustand-middleware-yjs';
 import * as Y from 'yjs';
 
 // 1. Initialize the Yjs Doc
@@ -272,6 +282,7 @@ declare module 'zustand-middleware-yjs' {
     atomicKeys?: string[];
     disableYText?: boolean;
     yTextKeys?: string[];
+    jsonElementKeys?: string[];
     onLoaded?: () => void;
     schemaVersion?: number;
     onObsolete?: (incomingVersion: number) => void;
