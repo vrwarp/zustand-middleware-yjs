@@ -145,7 +145,9 @@ The middleware maps JavaScript/Zustand data types to Yjs shared types automatica
 
 -   **`Array`** → `Y.Array` Pushes, splices, and inserts are mapped to Yjs array operations. As in JSON, an `undefined` element (or a sparse-array hole) is stored as `null`; function elements are dropped.
 
--   **`Primitive` (string, number, boolean)** → Native Stored as primitive values within the parent `Y.Map` or `Y.Array`.
+-   **`Primitive` (number, boolean, null)** → Native Stored as primitive values within the parent `Y.Map` or `Y.Array`.
+
+-   **`string`** → `Y.Text` by default (for collaborative text editing). Use `atomicKeys` or `disableYText` (optionally with `yTextKeys`) to store strings as plain primitive values instead.
 
 -   **`Function`** → *Ignored* Functions (actions) are NOT synced. They remain local to the store instance.
 
