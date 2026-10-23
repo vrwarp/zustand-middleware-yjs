@@ -694,13 +694,31 @@ describe("Yjs middleware with network provider", () => {
   let server: ChildProcess;
   const port = 1234;
 
-  const waitForProviderToConnect = async (provider: WebsocketProvider) =>
-    new Promise<void>((resolve) => {
-      (function waitForFoo() {
-        if (provider.wsconnected) return resolve();
-        setTimeout(waitForFoo, 30);
-      })();
-    });
+  const POLL_INTERVAL_MS = 30;
+  const WAIT_TIMEOUT_MS = 5000;
+
+  // Providers opened by a test; destroyed in afterEach so a failing assertion
+  // cannot leak open sockets / awareness timers into later tests.
+  let providers: WebsocketProvider[] = [];
+
+  // Polls until the condition holds; rejects on timeout so a lost update fails
+  // the test instead of hanging or passing/failing on a fixed sleep.
+  const waitUntil = async (
+    condition: () => boolean,
+    description: string
+  ): Promise<void> => {
+    const deadline = Date.now() + WAIT_TIMEOUT_MS;
+
+    while (!condition()) {
+      if (Date.now() > deadline) {
+        throw new Error(`Timed out waiting for ${description}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    }
+  };
+
+  const waitForProviderToConnect = (provider: WebsocketProvider) =>
+    waitUntil(() => provider.wsconnected, "websocket provider to connect");
 
 
   // Startup y-websocket demo server for test.
@@ -730,6 +748,11 @@ describe("Yjs middleware with network provider", () => {
 
   // Kill y-websocket demo server after test has completed.
   afterEach(() => {
+    providers.forEach((provider) => {
+      provider.awareness.destroy();
+      provider.destroy();
+    });
+    providers = [];
     server.kill();
   });
 
@@ -753,6 +776,7 @@ describe("Yjs middleware with network provider", () => {
         "WebSocketPolyfill": require("ws"),
       }
     );
+    providers.push(provider1);
     const store1 = createVanilla<State>(yjs(
       doc1,
       mapName,
@@ -780,6 +804,7 @@ describe("Yjs middleware with network provider", () => {
         "WebSocketPolyfill": require("ws"),
       }
     );
+    providers.push(provider2);
     const store2 = createVanilla<State>(yjs(
       doc2,
       mapName,
@@ -803,14 +828,11 @@ describe("Yjs middleware with network provider", () => {
 
     expect(store1.getState().count).toBe(2);
     // Network delivery is async; wait for the update to arrive and batch to flush.
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    await Promise.resolve();
+    await waitUntil(
+      () => store2.getState().count === 2,
+      "store2 to receive the incremented count"
+    );
     expect(store2.getState().count).toBe(2);
-
-    provider1.awareness.destroy();
-    provider1.destroy();
-    provider2.awareness.destroy();
-    provider2.destroy();
   });
 });
 
