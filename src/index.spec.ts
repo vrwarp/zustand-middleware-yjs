@@ -695,7 +695,7 @@ describe("Yjs middleware with network provider", () => {
   const port = 1234;
 
   const POLL_INTERVAL_MS = 30;
-  const WAIT_TIMEOUT_MS = 5000;
+  const WAIT_TIMEOUT_MS = 3000; // under jest's 5s default so our own timeout message surfaces
 
   // Providers opened by a test; destroyed in afterEach so a failing assertion
   // cannot leak open sockets / awareness timers into later tests.
