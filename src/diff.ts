@@ -76,7 +76,7 @@ const diffTextInternal = (
   const path = Array.from({ length: size }, () => -1);
 
   interface InlineInterface { x: number; y: number; k: number }
-const pathPositions: InlineInterface[] = [];
+  const pathPositions: InlineInterface[] = [];
 
   const snake = (snakeK: number, snakeP: number, snakeQ: number): number => {
     let innerY = Math.max(snakeP, snakeQ);
