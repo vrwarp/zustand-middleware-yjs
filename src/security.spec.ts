@@ -20,6 +20,9 @@ describe("Security: Prototype Pollution", () => {
     expect(ymap.has("normal")).toBe(true);
     expect(ymap.get("normal")).toBeInstanceOf(Y.Text);
     expect(ymap.get("normal")?.toString()).toBe("value");
+    // The global prototype chain must be untouched.
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(Object.prototype, "polluted")).toBe(false);
   });
 
   it("patchSharedType should filter out dangerous keys during insert/update", () => {
@@ -39,5 +42,8 @@ describe("Security: Prototype Pollution", () => {
     expect(ymap.has("normal")).toBe(true);
     expect(ymap.get("normal")).toBeInstanceOf(Y.Text);
     expect(ymap.get("normal")?.toString()).toBe("value");
+    // The global prototype chain must be untouched.
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(Object.prototype, "polluted")).toBe(false);
   });
 });
