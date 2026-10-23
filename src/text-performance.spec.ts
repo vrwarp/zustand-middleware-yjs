@@ -61,8 +61,7 @@ describe("Y.Text run coalescing", () => {
     const after = "0123456789".repeat(500); // No common characters.
 
     const { doc, map } = makeTextDoc(before);
-
-    const start = Date.now();
+    const itemsBefore = countItems(doc);
 
     doc.transact(() => {
       patchSharedType(map, { "text": after });
@@ -70,12 +69,12 @@ describe("Y.Text run coalescing", () => {
 
     expect((map.get("text") as Y.Text).toString()).toEqual(after);
     /*
-     * Generous ceiling: the uncoalesced per-character path took ~9 SECONDS
-     * for this input (quadratic tombstone walking); the coalesced path takes
-     * single-digit milliseconds. This only catches order-of-magnitude
-     * regressions, so it is safe on slow CI machines.
+     * The uncoalesced per-character path took ~9 SECONDS for this input
+     * (quadratic tombstone walking) and created O(chars) items. Asserting the
+     * item count keeps this deterministic: one deleted run plus one inserted
+     * run, with slack, versus the 5k items per-char ops create.
      */
-    expect(Date.now() - start).toBeLessThan(2_000);
+    expect(countItems(doc) - itemsBefore).toBeLessThanOrEqual(5);
   });
 
   it("produces identical Y.Text content for random edit pairs", () => {
