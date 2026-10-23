@@ -114,7 +114,7 @@ describe.each([
     const { storeA, storeB, sync } = makePair(scopeKey);
 
     await sync();
-    expect(storeB.getState().branches.two).toBeDefined();
+    expect(storeB.getState().branches.two).toEqual({ "label": "second", "items": [3] });
 
     storeA.setState((state) => {
       const next = { ...state.branches };
@@ -126,7 +126,7 @@ describe.each([
     await sync();
 
     expect(storeB.getState().branches.two).toBeUndefined();
-    expect(storeB.getState().branches.one).toBeDefined();
+    expect(storeB.getState().branches.one).toEqual({ "label": "first", "items": [1, 2] });
   });
 
   it("applies a newly added branch", async () => {
