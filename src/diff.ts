@@ -341,7 +341,7 @@ export const isDeepEqualForDiff = (a: unknown, b: unknown): boolean => {
 
   if (isRecord(a) && isRecord(b)) {
     const isEveryAKeyAccounted = Object.keys(a).every((property) =>
-       Object.hasOwn(b, property) || a[property] instanceof Function );
+      Object.hasOwn(b, property) || a[property] instanceof Function);
 
     if (!isEveryAKeyAccounted) {
       return false;
@@ -491,6 +491,12 @@ interface ArrayDiffOptions {
   nestedStrings?: NestedStringMode;
 }
 
+/** How far ahead on either side getArrayChanges looks for a deep-equal match. */
+const LOOKAHEAD_WINDOW = 10;
+/** The identity scan's budget floor, and its allowance per element of both arrays. */
+const MIN_IDENTITY_SCAN_BUDGET = 1_000;
+const IDENTITY_SCAN_BUDGET_PER_ELEMENT = 4;
+
 const getArrayChanges = (
   a: unknown[],
   b: unknown[],
@@ -499,7 +505,6 @@ const getArrayChanges = (
   const changeList: Change[] = [];
   let finalIndices = 0;
   let bOffset = 0;
-  const LOOKAHEAD_WINDOW = 10;
 
   /*
    * Beyond the deep-equality window, block shifts are still detectable at
@@ -524,7 +529,10 @@ const getArrayChanges = (
    *   falling back to the legacy element-wise path — concurrent remote
    *   edits make the confirm fail, never a wrong emit).
    */
-  let identityScanBudget = Math.max(1_000, 4 * (a.length + b.length));
+  let identityScanBudget = Math.max(
+    MIN_IDENTITY_SCAN_BUDGET,
+    IDENTITY_SCAN_BUDGET_PER_ELEMENT * (a.length + b.length)
+  );
 
   for (let index = 0; index < a.length; index = index + 1) {
     const value = a[index];
