@@ -160,6 +160,8 @@ describe("contract E.4 — hasHydrated consistency and flush()", () => {
 
 describe("contract D.3 (end-to-end) — the DEV scoped-diff tripwire fails loudly through flush()", () => {
   it("a mutate-in-place set() throws at the (sampled) flush", () => {
+    const originalSamplingRate = __scopedDiffDevSampling.rate;
+
     __scopedDiffDevSampling.rate = 1;
     try {
       const doc = new Y.Doc();
@@ -177,7 +179,7 @@ describe("contract D.3 (end-to-end) — the DEV scoped-diff tripwire fails loudl
       });
       expect(() => handle.flush()).toThrow(/scopedDiff divergence tripwire/);
     } finally {
-      __scopedDiffDevSampling.rate = 0.02;
+      __scopedDiffDevSampling.rate = originalSamplingRate;
     }
   });
 });
