@@ -56,6 +56,16 @@ interface YjsOptions {
   yTextKeys?: string[];
 
   /**
+   * Keys whose arrays hold immutable records (log entries, sessions). The
+   * object/array elements of an array under one of these keys, at any depth,
+   * are stored as plain JSON values instead of nested Y.Map / Y.Array. The
+   * array itself stays a Y.Array; a changed element is replaced whole, so use
+   * it only for records that are not edited once written. Strings inside an
+   * element are plain strings (atomicKeys / yTextKeys do not apply there).
+   */
+  jsonElementKeys?: string[];
+
+  /**
    * Optional callback fired when the store first loads existing data from the Y.Doc.
    */
   onLoaded?: () => void;
@@ -135,7 +145,9 @@ The middleware maps JavaScript/Zustand data types to Yjs shared types automatica
 
 -   **`Array`** → `Y.Array` Pushes, splices, and inserts are mapped to Yjs array operations. As in JSON, an `undefined` element (or a sparse-array hole) is stored as `null`; function elements are dropped.
 
--   **`Primitive` (string, number, boolean)** → Native Stored as primitive values within the parent `Y.Map` or `Y.Array`.
+-   **`Primitive` (number, boolean, null)** → Native Stored as primitive values within the parent `Y.Map` or `Y.Array`.
+
+-   **`string`** → `Y.Text` by default (for collaborative text editing). Use `atomicKeys` or `disableYText` (optionally with `yTextKeys`) to store strings as plain primitive values instead.
 
 -   **`Function`** → *Ignored* Functions (actions) are NOT synced. They remain local to the store instance.
 
@@ -154,7 +166,7 @@ This is the standard boilerplate for connecting a store.
 
 ```
 import { create } from 'zustand';
-import { yjs } from 'zustand-middleware-yjs';
+import yjs from 'zustand-middleware-yjs';
 import * as Y from 'yjs';
 
 // 1. Initialize the Yjs Doc
@@ -272,6 +284,7 @@ declare module 'zustand-middleware-yjs' {
     atomicKeys?: string[];
     disableYText?: boolean;
     yTextKeys?: string[];
+    jsonElementKeys?: string[];
     onLoaded?: () => void;
     schemaVersion?: number;
     onObsolete?: (incomingVersion: number) => void;

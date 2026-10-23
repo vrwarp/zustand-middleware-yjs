@@ -247,9 +247,15 @@ const makeAnnotations = (count: number): State => {
   return record;
 };
 
+const originalSamplingRate = __scopedDiffDevSampling.rate;
+
 beforeAll(() => {
   // The DEV tripwire is random and serializes the whole map when it fires.
   __scopedDiffDevSampling.rate = 0;
+});
+
+afterAll(() => {
+  __scopedDiffDevSampling.rate = originalSamplingRate;
 });
 
 describe("inbound child-key add / delete under a top-level key", () => {

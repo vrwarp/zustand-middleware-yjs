@@ -75,9 +75,7 @@ describe("Concurrency: Three-Way Merge Strategy", () => {
     // 6. Verification
     const finalMap = (map.get("items") as any).toJSON();
 
-    expect(finalMap).toHaveProperty("A");
-    expect(finalMap).toHaveProperty("C");
-    // EXPECTATION: B should be preserved (atomic merge).
-    expect(finalMap).toHaveProperty("B");
+    // EXPECTATION: B (remote) is preserved alongside A and C with exact values.
+    expect(finalMap).toEqual({ "A": 1, "B": 2, "C": 3 });
   });
 });

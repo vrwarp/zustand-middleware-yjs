@@ -258,12 +258,12 @@ describe("deep-equality prefilter type handling", () => {
   it("treats a string and a non-string as different", () => {
     // A string on either side short-circuits to "not equal" without
     // descending; both orders must behave the same.
-    expect(getChanges({ "v": "text" }, { "v": 5 } as Record<string, unknown>).length).toBeGreaterThan(0);
-    expect(getChanges({ "v": 5 }, { "v": "text" } as Record<string, unknown>).length).toBeGreaterThan(0);
+    expect(getChanges({ "v": "text" }, { "v": 5 } as Record<string, unknown>)).toStrictEqual([["update", "v", 5]]);
+    expect(getChanges({ "v": 5 }, { "v": "text" } as Record<string, unknown>)).toStrictEqual([["update", "v", "text"]]);
   });
 
   it("treats arrays of differing length as different without descending", () => {
-    expect(getChanges({ "v": [1, 2] }, { "v": [1, 2, 3] }).length).toBeGreaterThan(0);
+    expect(getChanges({ "v": [1, 2] }, { "v": [1, 2, 3] })).toStrictEqual([["pending", "v", [["insert", 2, 3]]]]);
   });
 
   it("returns no changes for identical nested structures", () => {
@@ -273,8 +273,8 @@ describe("deep-equality prefilter type handling", () => {
   });
 
   it("distinguishes a record from an array at the same key", () => {
-    expect(getChanges({ "v": { "0": 1 } }, { "v": [1] } as unknown as Record<string, unknown>).length)
-      .toBeGreaterThan(0);
+    expect(getChanges({ "v": { "0": 1 } }, { "v": [1] } as unknown as Record<string, unknown>))
+      .toStrictEqual([["update", "v", [1]]]);
   });
 });
 

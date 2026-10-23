@@ -20,6 +20,13 @@
  * 7. Nested change lists re-diffed at every pending level (nested-lists.ts).
  * 8. Full-tree record diff cost by the changed key's position
  *    (bench/record-diff.ts).
+ * 9. Inbound child-key patching, mixed-batch convergence and no-op inbound
+ *    notifications (inbound-child-keys.ts, inbound-mixed-batch.ts,
+ *    noop-inbound.ts).
+ * 10. Record deletion cost (bench/record-delete.ts).
+ * 11. Versicle-shaped aging, shared-map, bulk-inbound and cold-start
+ *    representation benches (bench/versicle.ts), and Y.Array bulk primitive
+ *    runs (bench/yarray-runs.ts).
  *
  * Run with: npm run bench
  */
