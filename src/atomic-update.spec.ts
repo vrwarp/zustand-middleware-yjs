@@ -27,6 +27,8 @@ describe("Yjs middleware with atomic keys", () => {
     api.getState().setDescription("updated");
     await Promise.resolve();
 
+    expect(map.get("description")).toBe("updated");
+
     // update again
     api.getState().setDescription("updated2");
     await Promise.resolve();
